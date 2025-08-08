@@ -32,9 +32,8 @@ async def get_current_pose(client: EventClient | None = None, timeout: float = 0
     Args:
         client: A EventClient for the required service (filter)
     Returns:
-        The start pose (Pose3F64)
+        The current pose (Pose3F64)
     """
-    print("Creating start pose...")
 
     zero_tangent = np.zeros((6, 1), dtype=np.float64)
     start: Pose3F64 = Pose3F64(
