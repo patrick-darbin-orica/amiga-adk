@@ -18,7 +18,8 @@ package farm_ng.canbus.proto;
 
 // Message to send a twist command to the vehicle
 message Twist2d {
-  // The commanded linear velocity of the vehicle in the x direction in meters per second
+  // The commanded linear velocity of the vehicle in the x direction in meters
+  // per second
   float linear_velocity_x = 1;
   float linear_velocity_y = 2;
 
@@ -36,9 +37,7 @@ message RawCanbusMessage {
   bytes data = 5; // Encoded payload of the CAN packet
 }
 
-message RawCanbusMessages {
-  repeated RawCanbusMessage messages = 1;
-}
+message RawCanbusMessages { repeated RawCanbusMessage messages = 1; }
 
 // Enum of motor controller states
 enum MotorControllerStatus {
@@ -54,16 +53,26 @@ enum MotorControllerStatus {
 // Proto definition containing state values of a motor
 // Corresponds to MotorState class
 message MotorState {
-    double stamp = 1; // stamp of the RawCanbusMessage containing the motor state values
-    uint32 id = 2; // CAN node ID of the motor
-    uint32 status = 3; // Corresponds to MotorControllerStatus enum
-    int32 rpm = 4; // Non-geared motor rpm. Values are inverted (negative) for flipped motors.
-    double voltage = 5; // Battery voltage, as measured at motor controller
-    double current = 6; // Motor current draw, as measured at motor controller
-    int32 temperature = 7; // Motor temperature
+  double stamp =
+      1; // stamp of the RawCanbusMessage containing the motor state values
+  uint32 id = 2;     // CAN node ID of the motor
+  uint32 status = 3; // Corresponds to MotorControllerStatus enum
+  int32 rpm = 4;     // Non-geared motor rpm. Values are inverted (negative) for
+                     // flipped motors.
+  double voltage = 5;    // Battery voltage, as measured at motor controller
+  double current = 6;    // Motor current draw, as measured at motor controller
+  int32 temperature = 7; // Motor temperature
 }
 
 message MotorStates {
   // List of motorstates
   repeated MotorState motors = 1;
+}
+
+// Individual motor RPM data
+message MotorRpm {
+  uint32 motor_id = 1;  // CAN ID (522, 523, 524, 525)
+  int32 rpm = 2;        // RPM value (signed)
+  double timestamp = 3; // Original CAN message timestamp
+  bool valid = 4;       // Whether the RPM reading is valid
 }

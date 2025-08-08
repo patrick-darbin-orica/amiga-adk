@@ -1,0 +1,15 @@
+{
+  "name": "filter",
+  "port": 20001,
+  "host": "100.104.73.63",
+  "log_level": "INFO",
+  "subscriptions": [
+    {
+      "uri": {
+        "path": "/state",
+        "query": "service_name=filter"
+      },
+      "every_n": 1
+    }
+  ]
+}
