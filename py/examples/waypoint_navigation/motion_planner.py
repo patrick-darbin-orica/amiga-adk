@@ -22,6 +22,7 @@ from pathlib import Path
 from typing import Dict
 from typing import Optional
 from typing import Tuple
+import pandas as pd
 
 import numpy as np
 from farm_ng.core.event_client import EventClient
@@ -33,6 +34,49 @@ from farm_ng_core_pybind import Pose3F64
 from farm_ng_core_pybind import Rotation3F64
 from google.protobuf.empty_pb2 import Empty
 from track_planner import TrackBuilder
+
+
+def _poses_from_csv(csv_path: Path) -> dict[int, Pose3F64]:
+    """
+    Load ENU waypoints from CSV with columns:
+      - dx (Easting, meters), dy (Northing, meters)
+      - optional: yaw_deg (heading along row, degrees). If omitted, we'll infer from neighbors.
+
+    Returns a dict of Pose3F64 representing *world_from_hole* in NWU, 1-indexed,
+    matching what the JSON Track loader produced.
+    """
+    df = pd.read_csv(csv_path)
+    df.columns = df.columns.str.strip().str.lower()
+    if not {"dx", "dy"} <= set(df.columns):
+        raise RuntimeError(f"{csv_path} must contain columns 'dx' and 'dy'.")
+
+    # ENU -> NWU: north = dy, west = -dx
+    north = df["dy"].astype(float).to_numpy()
+    west = (-df["dx"].astype(float)).to_numpy()
+
+    # Yaw: prefer yaw_deg column; else infer from consecutive points (path tangent).
+    if "yaw_deg" in df.columns:
+        yaw = np.deg2rad(df["yaw_deg"].astype(float).to_numpy())
+    else:
+        # Infer yaw at each point using forward difference, last uses backward difference.
+        dx_n = np.zeros_like(north)
+        dy_w = np.zeros_like(west)
+        if len(north) > 1:
+            dx_n[:-1] = north[1:] - north[:-1]
+            dy_w[:-1] = west[1:] - west[:-1]
+            dx_n[-1] = north[-1] - north[-2]
+            dy_w[-1] = west[-1] - west[-2]
+        # In NWU, yaw is atan2(Y_west, X_north)
+        yaw = np.arctan2(dy_w, dx_n)
+
+    poses: dict[int, Pose3F64] = {}
+    zero_tangent = np.zeros((6, 1), dtype=np.float64)
+    for i, (n, w, th) in enumerate(zip(north, west, yaw), start=1):
+        iso = Isometry3F64(
+            np.array([n, w, 0.0], dtype=np.float64), Rotation3F64.Rz(float(th)))
+        poses[i] = Pose3F64(a_from_b=iso, frame_a="world",
+                            frame_b="hole", tangent_of_b_in_a=zero_tangent)
+    return poses
 
 
 class FirstManeuver(Enum):
@@ -64,9 +108,11 @@ async def get_current_pose(client: EventClient | None = None, timeout: float = 5
             )
             return Pose3F64.from_proto(state.pose)
         except asyncio.TimeoutError:
-            logger.info("Timeout while getting filter state. Using default start pose.")
+            logger.info(
+                "Timeout while getting filter state. Using default start pose.")
         except Exception as e:
-            logger.error(f"Error getting filter state: {e}. Using default start pose.")
+            logger.error(
+                f"Error getting filter state: {e}. Using default start pose.")
 
     return None
 
@@ -93,7 +139,8 @@ class MotionPlanner:
         self.current_pose: Optional[Pose3F64] = None
         self.pose_query_task: asyncio.Task | None = None
         self.should_poll: bool = True
-        self.row_end_segment_index: int = 1  # Track if we have finished all row end maneuvers (total of 5)
+        # Track if we have finished all row end maneuvers (total of 5)
+        self.row_end_segment_index: int = 1
         if turn_direction not in ["left", "right"]:
             raise ValueError("turn_direction must be either 'left' or 'right'")
         self.turn_angle_sign: float = 1.0 if turn_direction == "left" else -1.0
@@ -101,16 +148,17 @@ class MotionPlanner:
         if not isinstance(waypoints_path, Path):
             waypoints_path = Path(waypoints_path)
         try:
-            # Load the Track protobuf from JSON
-            track: Track = proto_from_json_file(waypoints_path, Track())
+            # Load waypoints either from Track JSON or CSV
+            if waypoints_path.suffix.lower() == ".csv":
+                waypoints_dict = _poses_from_csv(waypoints_path)
+            else:
+                track: Track = proto_from_json_file(waypoints_path, Track())
+                waypoints_dict = {i: Pose3F64.from_proto(
+                    p) for i, p in enumerate(track.waypoints, 1)}
 
-            # Convert to dictionary with integer keys
-            waypoints_dict = {}
-            for i, waypoint_proto in enumerate(track.waypoints, 1):
-                waypoint_pose = Pose3F64.from_proto(waypoint_proto)
-                waypoints_dict[i] = waypoint_pose
         except Exception as e:
-            raise RuntimeError(f"Failed to load waypoints from {waypoints_path}: {e}")
+            raise RuntimeError(
+                f"Failed to load waypoints from {waypoints_path}: {e}")
 
         # Load tool offsets
         self.tool_offset = self._load_tool_offset(tool_config_path)
@@ -128,7 +176,8 @@ class MotionPlanner:
         translation = offset_data["translation"]
         robot_from_tool = Pose3F64(
             a_from_b=Isometry3F64(
-                translation=[translation["x"], translation["y"], translation["z"]], rotation=Rotation3F64()
+                translation=[translation["x"], translation["y"],
+                             translation["z"]], rotation=Rotation3F64()
             ),
             frame_a="robot",
             frame_b="tool",
@@ -171,7 +220,8 @@ class MotionPlanner:
                 if maybe_current_pose is not None:
                     self.current_pose = maybe_current_pose
                 else:
-                    logger.warning("Current pose is None, ensure your filter is running.")
+                    logger.warning(
+                        "Current pose is None, ensure your filter is running.")
             except Exception as e:
                 logger.error(f"Error updating current pose: {e}")
                 return None
@@ -207,7 +257,8 @@ class MotionPlanner:
         goal_pose = self.waypoints.get(1)
 
         if goal_pose is None:
-            raise RuntimeError("First waypoint (index 1) not found in waypoints")
+            raise RuntimeError(
+                "First waypoint (index 1) not found in waypoints")
 
         # Transform goal to robot frame to get relative position
         robot_from_goal = current_pose.inverse() * goal_pose
@@ -218,7 +269,8 @@ class MotionPlanner:
         delta_heading = goal_in_robot_frame[-1]  # Yaw difference
 
         # Calculate bearing angle - how far off from "straight behind" we are
-        bearing_angle = abs(np.arctan2(abs(delta_y), abs(delta_x))) if delta_x != 0 else np.pi / 2
+        bearing_angle = abs(np.arctan2(abs(delta_y), abs(
+            delta_x))) if delta_x != 0 else np.pi / 2
 
         return {
             'delta_x': delta_x,
@@ -238,8 +290,10 @@ class MotionPlanner:
         analysis = await self._analyze_approach_scenario()
 
         # Thresholds
-        BEARING_THRESHOLD = np.radians(20)  # 20 degrees | relatively small delta y compared to delta x
-        HEADING_THRESHOLD = np.radians(10)  # 10 degrees | relatively small heading error
+        # 20 degrees | relatively small delta y compared to delta x
+        BEARING_THRESHOLD = np.radians(20)
+        # 10 degrees | relatively small heading error
+        HEADING_THRESHOLD = np.radians(10)
         MIN_LONGITUDINAL_DISTANCE = (
             2.0  # 2 meters | ensure we're at least 2 m behind the goal to ensure a smooth arrival
         )
@@ -273,7 +327,8 @@ class MotionPlanner:
         goal_pose = self.waypoints.get(1)
 
         if goal_pose is None:
-            raise RuntimeError("First waypoint (index 1) not found in waypoints")
+            raise RuntimeError(
+                "First waypoint (index 1) not found in waypoints")
 
         # Get current and goal headings in world frame
         current_pose = await self._get_current_pose()
@@ -283,10 +338,13 @@ class MotionPlanner:
         # Calculate perpendicular direction to the goal heading
         # If goal is pointing North (0°), perpendicular could be East (90°) or West (-90°)
         # We choose based on which side the goal is on
-        goal_direction_sign = 1 if analysis['delta_y'] > 0 else -1  # Which side is goal on?
-        perpendicular_heading = goal_heading + (np.pi / 2) * goal_direction_sign
+        # Which side is goal on?
+        goal_direction_sign = 1 if analysis['delta_y'] > 0 else -1
+        perpendicular_heading = goal_heading + \
+            (np.pi / 2) * goal_direction_sign
 
-        turn_to_perpendicular = self._angle_difference(current_heading, perpendicular_heading)
+        turn_to_perpendicular = self._angle_difference(
+            current_heading, perpendicular_heading)
 
         # Create the track
         track_builder = TrackBuilder(start=current_pose)
@@ -303,13 +361,15 @@ class MotionPlanner:
         )
 
         # Step 3: Turn to align with the goal heading
-        turn_to_goal_heading = self._angle_difference(perpendicular_heading, goal_heading)
+        turn_to_goal_heading = self._angle_difference(
+            perpendicular_heading, goal_heading)
         track_builder.create_turn_segment(
             next_frame_b="aligned_to_goal_heading", angle=turn_to_goal_heading, spacing=0.05
         )
 
         # Step 4: Drive straight to goal
-        track_builder.create_ab_segment(next_frame_b="waypoint_1", final_pose=goal_pose, spacing=0.1)
+        track_builder.create_ab_segment(
+            next_frame_b="waypoint_1", final_pose=goal_pose, spacing=0.1)
 
         self.current_waypoint_index += 1
 
@@ -322,14 +382,18 @@ class MotionPlanner:
         goal_pose = self.waypoints.get(1)
 
         if goal_pose is None:
-            raise RuntimeError("First waypoint (index 1) not found in waypoints")
+            raise RuntimeError(
+                "First waypoint (index 1) not found in waypoints")
 
         turn_angle = self._angle_difference(
-            current_pose.a_from_b.rotation.log()[-1], goal_pose.a_from_b.rotation.log()[-1]
+            current_pose.a_from_b.rotation.log(
+            )[-1], goal_pose.a_from_b.rotation.log()[-1]
         )
         track_builder = TrackBuilder(start=current_pose)
-        track_builder.create_turn_segment(next_frame_b="aligned_to_goal", angle=turn_angle, spacing=0.05)
-        track_builder.create_ab_segment(next_frame_b="waypoint_1", final_pose=goal_pose, spacing=0.1)
+        track_builder.create_turn_segment(
+            next_frame_b="aligned_to_goal", angle=turn_angle, spacing=0.05)
+        track_builder.create_ab_segment(
+            next_frame_b="waypoint_1", final_pose=goal_pose, spacing=0.1)
 
         self.current_waypoint_index += 1
 
@@ -372,15 +436,18 @@ class MotionPlanner:
         next_frame_b = f"row_end_{index}"
         if index == 1:
             # Drive forward – move away from the last hole into a buffer zone.
-            track_builder.create_straight_segment(next_frame_b=next_frame_b, distance=self.headland_buffer, spacing=0.1)
+            track_builder.create_straight_segment(
+                next_frame_b=next_frame_b, distance=self.headland_buffer, spacing=0.1)
             track_segment = track_builder.track
         elif index == 2 or index == 4:
             # Turn 90° – reorient the robot toward the next row.
-            track_builder.create_turn_segment(next_frame_b=next_frame_b, angle=radians(90 * self.turn_angle_sign))
+            track_builder.create_turn_segment(
+                next_frame_b=next_frame_b, angle=radians(90 * self.turn_angle_sign))
             track_segment = track_builder.track
         else:
             # Drive forward – cross the row spacing gap.
-            track_builder.create_straight_segment(next_frame_b=next_frame_b, distance=self.row_spacing, spacing=0.1)
+            track_builder.create_straight_segment(
+                next_frame_b=next_frame_b, distance=self.row_spacing, spacing=0.1)
             track_segment = track_builder.track
 
         return track_segment
@@ -462,7 +529,8 @@ class MotionPlanner:
         # We're switching to the next row
         # 1. Check if we have finished all row end maneuvers
         if self.row_end_segment_index >= 5:
-            logger.info("Finished all row end maneuvers, moving to the next row.")
+            logger.info(
+                "Finished all row end maneuvers, moving to the next row.")
             seg_name = f"row_end_5_to_waypoint_{self.current_waypoint_index + 1}"
             return (await self._create_ab_segment_to_next_waypoint(), seg_name)
         else:

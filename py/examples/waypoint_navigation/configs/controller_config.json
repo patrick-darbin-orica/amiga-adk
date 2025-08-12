@@ -1,7 +1,7 @@
 {
   "name": "track_follower",
   "port": 20101,
-  "host": "100.104.73.63",
+  "host": "fox-furrow",
   "subscriptions": [
     {
       "uri": {

@@ -19,21 +19,22 @@ import json
 import logging
 import signal
 import sys
+import time
 from pathlib import Path
-from typing import Dict
-from typing import List
-from typing import Optional
-from typing import Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from farm_ng.core.event_client import EventClient
 from farm_ng.core.event_service_pb2 import EventServiceConfig
 from farm_ng.core.events_file_reader import proto_from_json_file
-from farm_ng.track.track_pb2 import RobotStatus
-from farm_ng.track.track_pb2 import Track
-from farm_ng.track.track_pb2 import TrackFollowerState
-from farm_ng.track.track_pb2 import TrackFollowRequest
-from farm_ng.track.track_pb2 import TrackStatusEnum
+from farm_ng.track.track_pb2 import (
+    RobotStatus,
+    Track,
+    TrackFollowerState,
+    TrackFollowRequest,
+    TrackStatusEnum,
+)
+from utils.actuator import BaseActuator, NullActuator, CanHBridgeActuator
 from farm_ng_core_pybind import Pose3F64
 from google.protobuf.empty_pb2 import Empty
 from motion_planner import MotionPlanner
@@ -43,7 +44,9 @@ logger = logging.getLogger("Navigation Manager")
 
 
 class NavigationManager:
-    """Orchestrates waypoint navigation using MotionPlanner and track_follower service."""
+    """Orchestrates waypoint navigation using MotionPlanner and track_follower service.
+       Optionally pulses an H-bridge (linear actuator) in forward after each completed segment.
+    """
 
     def __init__(
         self,
@@ -51,6 +54,14 @@ class NavigationManager:
         controller_client: EventClient,
         motion_planner: MotionPlanner,
         no_stop: bool = False,
+        actuator: BaseActuator | None = None,
+        # Actuator / CAN options
+        canbus_client: Optional[EventClient] = None,
+        actuator_enabled: bool = False,
+        actuator_id: int = 0,
+        actuator_forward_seconds: float = 1.5,
+        actuator_reverse_seconds: float = 1.5,
+        actuator_rate_hz: float = 10.0,
     ):
         self.filter_client = filter_client
         self.controller_client = controller_client
@@ -65,6 +76,21 @@ class NavigationManager:
         self.monitor_task: Optional[asyncio.Task] = None
         self.curr_segment_name: str = "start"
         self.no_stop = no_stop
+        self.actuator = actuator or NullActuator()
+
+        # Actuator / CAN config
+        self.canbus_client = canbus_client
+        self.actuator_enabled = actuator_enabled and (
+            self.canbus_client is not None)
+        self.actuator_id = actuator_id
+        self.actuator_forward_seconds = max(0.0, actuator_forward_seconds)
+        self.actuator_reverse_seconds = max(0.0, actuator_reverse_seconds)
+        self.actuator_rate_hz = max(0.1, actuator_rate_hz)
+
+        if actuator_enabled and self.canbus_client is None:
+            logger.warning(
+                "Actuator was enabled but no CAN bus client provided; disabling actuator pulses.")
+            self.actuator_enabled = False
 
     def record_robot_position(self, segment_name: str) -> None:
         """Record robot position before starting a track segment.
@@ -75,29 +101,27 @@ class NavigationManager:
         current_pose_obj = self.motion_planner.current_pose
         if current_pose_obj is not None:
             try:
-                translation_array = np.asarray(current_pose_obj.a_from_b.translation)
+                translation_array = np.asarray(
+                    current_pose_obj.a_from_b.translation)
                 x = float(translation_array[0])
                 y = float(translation_array[1])
                 heading = float(current_pose_obj.a_from_b.rotation.log()[-1])
 
-                position_record = {'segment_name': segment_name, 'x': x, 'y': y, 'heading': heading}
+                position_record = {"segment_name": segment_name,
+                                   "x": x, "y": y, "heading": heading}
 
                 self.robot_positions.append(position_record)
                 logger.info(
-                    f"📍 Recorded robot position for segment '{segment_name}': ({x:.2f}, {y:.2f}, "
-                    f"{np.degrees(heading):.1f}°)"
+                    f"📍 Recorded robot position for segment '{segment_name}': "
+                    f"({x:.2f}, {y:.2f}, {np.degrees(heading):.1f}°)"
                 )
-
             except Exception as e:
                 logger.error(f"❌ Failed to record robot position: {e}")
 
     async def set_track(self, track: Track) -> None:
-        """Set the track for the track_follower to follow.
-
-        Args:
-            track: The track to follow
-        """
-        logger.info(f"📤 Setting track with {len(track.waypoints)} waypoints...")
+        """Set the track for the track_follower to follow."""
+        logger.info(
+            f"📤 Setting track with {len(track.waypoints)} waypoints...")
         try:
             await self.controller_client.request_reply("/set_track", TrackFollowRequest(track=track))
             logger.info("✅ Track set successfully")
@@ -139,11 +163,7 @@ class NavigationManager:
             self.track_failed_event.set()
 
     async def _process_track_state(self, state: TrackFollowerState) -> None:
-        """Process incoming track follower state messages.
-
-        Args:
-            state: The TrackFollowerState message
-        """
+        """Process incoming track follower state messages."""
         track_status = state.status.track_status
         robot_controllable = state.status.robot_status.controllable
 
@@ -183,20 +203,22 @@ class NavigationManager:
                             mode_name = RobotStatus.FailureMode.Name(mode)
                             failure_modes.append(mode_name)
                         except Exception as e:
-                            # Fallback to the integer value if enum name lookup fails
                             failure_modes.append(f"UNKNOWN({mode})")
-                            logger.error(f"❌ Error getting failure mode name: {e}")
+                            logger.error(
+                                f"❌ Error getting failure mode name: {e}")
 
-                    logger.info(f"Robot not controllable. Failure modes: {failure_modes}")
+                    logger.info(
+                        f"Robot not controllable. Failure modes: {failure_modes}")
                 except Exception as e:
-                    logger.error(f"Robot not controllable. Failed to get failure modes: {e}")
+                    logger.error(
+                        f"Robot not controllable. Failed to get failure modes: {e}")
             self.track_failed_event.set()
 
         # Log cross-track error if available
         if (
-            hasattr(state, 'progress')
+            hasattr(state, "progress")
             and state.progress
-            and hasattr(state.progress, 'cross_track_error')
+            and hasattr(state.progress, "cross_track_error")
             and state.progress.cross_track_error
         ):
             error = state.progress.cross_track_error
@@ -213,7 +235,6 @@ class NavigationManager:
 
         self.shutdown_requested = True
 
-        # Cancel monitor task
         if self.monitor_task and not self.monitor_task.done():
             logger.info("🛑 Cancelling monitor task...")
             self.monitor_task.cancel()
@@ -222,7 +243,6 @@ class NavigationManager:
             except asyncio.CancelledError:
                 pass
 
-        # Shutdown motion planner
         try:
             await self.motion_planner._shutdown()
         except Exception as e:
@@ -231,17 +251,12 @@ class NavigationManager:
         logger.info("✅ Cleanup completed")
 
     def get_user_choice(self) -> str:
-        """Get user input for navigation choice.
-
-        Returns:
-            'continue' to continue to next waypoint, 'redo' to redo current segment
-        """
-
+        """Get user input for navigation choice."""
         if self.no_stop or "waypoint" not in self.curr_segment_name:
             logger.info(
                 "🚀 Either no stop mode enabled or going to the next row, automatically continuing to next waypoint"
             )
-            return 'continue'
+            return "continue"
 
         print("\n" + "=" * 50)
         print("🤖 NAVIGATION CHOICE")
@@ -256,35 +271,27 @@ class NavigationManager:
             try:
                 choice = input("Enter your choice (1/2/q): ").strip().lower()
 
-                if choice in ['1', 'c', 'continue']:
+                if choice in ["1", "c", "continue"]:
                     print("➡️  Continuing to next waypoint...")
-                    return 'continue'
-                elif choice in ['2', 'r', 'redo']:
+                    return "continue"
+                elif choice in ["2", "r", "redo"]:
                     print("🔄 Redoing current segment...")
-                    return 'redo'
-                elif choice in ['q', 'quit', 'exit']:
+                    return "redo"
+                elif choice in ["q", "quit", "exit"]:
                     print("🛑 Quitting navigation...")
-                    return 'quit'
+                    return "quit"
                 else:
                     print("❌ Invalid choice. Please enter 1, 2, or q.")
 
             except (EOFError, KeyboardInterrupt):
                 print("\n🛑 Navigation interrupted by user")
-                return 'quit'
+                return "quit"
 
     async def wait_for_track_completion(self, timeout: float = 60.0) -> bool:
-        """Wait for track to complete or fail.
-
-        Args:
-            timeout: Maximum time to wait in seconds
-
-        Returns:
-            True if track completed successfully, False if failed or timed out
-        """
+        """Wait for track to complete or fail."""
         logger.info(f"⏳ Waiting for track completion (timeout: {timeout}s)...")
 
         try:
-            # Wait for either completion or failure
             done, pending = await asyncio.wait(
                 [
                     asyncio.create_task(self.track_complete_event.wait()),
@@ -294,7 +301,6 @@ class NavigationManager:
                 return_when=asyncio.FIRST_COMPLETED,
             )
 
-            # Cancel pending tasks
             for task in pending:
                 task.cancel()
 
@@ -302,7 +308,6 @@ class NavigationManager:
                 logger.warning("⏰ Timeout waiting for track completion")
                 return False
 
-            # Check which event was set
             if self.track_complete_event.is_set():
                 return True
             elif self.track_failed_event.is_set():
@@ -315,30 +320,27 @@ class NavigationManager:
         return False
 
     async def execute_single_track(self, track: Track, timeout: float = 30.0) -> bool:
-        """Execute a single track segment and wait for completion.
-
-        Args:
-            track: The track to execute
-            timeout: Maximum time to wait for completion
-
-        Returns:
-            True if successful, False otherwise
-        """
-        # Reset events
+        """Execute a single track segment and wait for completion."""
         self.track_complete_event.clear()
         self.track_failed_event.clear()
 
         try:
-            # Set and start the track
             await self.set_track(track)
-            await asyncio.sleep(1.0)  # Brief pause to ensure track is set
+            await asyncio.sleep(1.0)  # ensure track is set
+            # TODO: Add IMUjiggle function
             await self.start_following()
 
-            # Wait for completion
             success = await self.wait_for_track_completion(timeout)
 
             if success:
                 logger.info("✅ Track segment completed successfully")
+                await self.actuator.pulse_sequence(
+                    forward_seconds=self.actuator_forward_seconds,
+                    reverse_seconds=self.actuator_reverse_seconds,
+                    rate_hz=self.actuator_rate_hz,
+                    settle_before=3.0,     # your current pre‑pulse wait
+                    settle_between=1.0
+                )
             else:
                 logger.warning("❌ Track segment failed or timed out")
 
@@ -351,8 +353,6 @@ class NavigationManager:
     async def run_navigation(self) -> None:
         """Run the complete waypoint navigation sequence."""
         logger.info("🚁 Starting waypoint navigation...")
-
-        # Start monitoring track state
         self.monitor_task = asyncio.create_task(self.monitor_track_state())
 
         try:
@@ -363,61 +363,59 @@ class NavigationManager:
                     logger.info("🛑 Shutdown requested, stopping navigation")
                     break
 
-                # Get user choice before proceeding
                 user_choice: str = self.get_user_choice()
 
-                if user_choice == 'quit':
+                if user_choice == "quit":
                     logger.info("🛑 User requested quit, stopping navigation")
                     self.shutdown_requested = True
                     break
 
-                if user_choice == 'redo':
-                    # Redo the last segment with recalculated path
-                    logger.info("🔄 Redoing last segment with recalculated path...")
-
-                    # Get a new track segment to the same target
+                if user_choice == "redo":
+                    logger.info(
+                        "🔄 Redoing last segment with recalculated path...")
                     (track_segment, segment_name) = await self.motion_planner.redo_last_segment()
-
                 else:
                     (track_segment, segment_name) = await self.motion_planner.next_track_segment()
 
-                # Get next track segment
                 logger.info(f"\n--- Segment {segment_count + 1} ---")
 
                 if track_segment is None:
-                    logger.info("🏁 No more track segments. Navigation complete!")
+                    logger.info(
+                        "🏁 No more track segments. Navigation complete!")
                     self.record_robot_position("Final waypoint")
                     break
 
                 self.record_robot_position(segment_name)
-                logger.info(f"Got track segment '{segment_name}' with {len(track_segment.waypoints)} waypoints")
+                logger.info(
+                    f"Got track segment '{segment_name}' with {len(track_segment.waypoints)} waypoints"
+                )
                 self.curr_segment_name = segment_name
                 self.navigation_progress[segment_name] = track_segment
 
                 segment_count += 1
-                logger.info(f"📍 Executing track segment {segment_count} with {len(track_segment.waypoints)} waypoints")
+                logger.info(
+                    f"📍 Executing track segment {segment_count} with {len(track_segment.waypoints)} waypoints"
+                )
 
-                # Execute the track segment
                 success = await self.execute_single_track(track_segment)
                 failed_attempts: int = 0
 
                 while not success:
                     if self.shutdown_requested:
                         break
-                    logger.warning(f"💥 Failed to execute segment {segment_count}. Stopping navigation.")
-                    # We might have failed because the filter diverged or CANBUS timed out.
-                    # We will try again
+                    logger.warning(
+                        f"💥 Failed to execute segment {segment_count}. Stopping navigation.")
                     failed_attempts += 1
                     if segment_count == 1 and failed_attempts > 5:
-                        # We're probably just getting stuck because the robot is too far from the path
-                        # Let's move give it a "little push"
                         await move_robot_forward(time_goal=1.5)
-                        logger.info(f"Moving robot forward | Failed attempts: {failed_attempts}")
+                        logger.info(
+                            f"Moving robot forward | Failed attempts: {failed_attempts}")
                         failed_attempts = 0
                     track_segment, segment_name = await self.motion_planner.redo_last_segment()
                     success = await self.execute_single_track(track_segment)
 
-            logger.info(f"🎯 Navigation completed after {segment_count} segments")
+            logger.info(
+                f"🎯 Navigation completed after {segment_count} segments")
 
         except asyncio.CancelledError:
             logger.info("🛑 Navigation task cancelled")
@@ -427,38 +425,46 @@ class NavigationManager:
         except Exception as e:
             logger.error(f"💥 Navigation failed with error: {e}")
         finally:
-            # Cleanup
             await self._cleanup()
 
 
-async def setup_clients(filter_config_path: Path, controller_config_path: Path) -> Tuple[EventClient, EventClient]:
-    """Setup EventClients for filter and controller services.
-
-    Args:
-        filter_config_path: Path to filter service config
-        controller_config_path: Path to controller service config
-
-    Returns:
-        Tuple of (filter_client, controller_client)
-    """
+async def setup_clients(
+    filter_config_path: Path,
+    controller_config_path: Path,
+    canbus_config_path: Optional[Path] = None,
+) -> Tuple[EventClient, EventClient, Optional[EventClient]]:
+    """Setup EventClients for filter, controller, and optional CAN bus services."""
     logger.info("🔧 Setting up service clients...")
 
-    # Load filter service config
-    filter_config = proto_from_json_file(filter_config_path, EventServiceConfig())
+    # Filter service
+    filter_config = proto_from_json_file(
+        filter_config_path, EventServiceConfig())
     if filter_config.name != "filter":
-        raise RuntimeError(f"Expected filter service config, got {filter_config.name}")
+        raise RuntimeError(
+            f"Expected filter service config, got {filter_config.name}")
     filter_client = EventClient(filter_config)
 
-    # Load controller service config
-    controller_config = proto_from_json_file(controller_config_path, EventServiceConfig())
+    # Controller service
+    controller_config = proto_from_json_file(
+        controller_config_path, EventServiceConfig())
     if controller_config.name != "track_follower":
-        raise RuntimeError(f"Expected track_follower service config, got {controller_config.name}")
+        raise RuntimeError(
+            f"Expected track_follower service config, got {controller_config.name}")
     controller_client = EventClient(controller_config)
+
+    # Optional CAN bus service
+    canbus_client: Optional[EventClient] = None
+    if canbus_config_path is not None:
+        can_config = proto_from_json_file(
+            canbus_config_path, EventServiceConfig())
+        # The name may vary in deployments; not enforcing a specific value here.
+        canbus_client = EventClient(can_config)
+        logger.info(f"✅ CAN bus client: {can_config.name}")
 
     logger.info(f"✅ Filter client: {filter_config.name}")
     logger.info(f"✅ Controller client: {controller_config.name}")
 
-    return filter_client, controller_client
+    return filter_client, controller_client, canbus_client
 
 
 def setup_signal_handlers(nav_manager: NavigationManager) -> None:
@@ -468,12 +474,10 @@ def setup_signal_handlers(nav_manager: NavigationManager) -> None:
         logger.info(f"\n🛑 Received signal {signum}, initiating shutdown...")
         nav_manager.shutdown_requested = True
 
-        # Cancel the main navigation task
         if nav_manager.main_task and not nav_manager.main_task.done():
             nav_manager.main_task.cancel()
 
-        # For immediate termination on second signal
-        if hasattr(signal_handler, 'call_count'):
+        if hasattr(signal_handler, "call_count"):
             signal_handler.call_count += 1
             if signal_handler.call_count > 1:
                 logger.info("🛑 Second signal received, forcing exit")
@@ -488,9 +492,12 @@ def setup_signal_handlers(nav_manager: NavigationManager) -> None:
 async def main(args) -> None:
     """Main function to orchestrate waypoint navigation."""
     nav_manager = None
+    actuator: BaseActuator = NullActuator()
     try:
-        # Setup clients
-        filter_client, controller_client = await setup_clients(args.filter_config, args.controller_config)
+        # Setup clients (CAN bus optional)
+        filter_client, controller_client, canbus_client = await setup_clients(
+            args.filter_config, args.controller_config, args.canbus_config
+        )
 
         # Initialize motion planner
         logger.info("🗺️  Initializing motion planner...")
@@ -504,16 +511,24 @@ async def main(args) -> None:
             headland_buffer=args.headland_buffer,
         )
 
-        # Create nav_manager
+        actuator: BaseActuator = (
+            CanHBridgeActuator(client=canbus_client,
+                               actuator_id=args.actuator_id)
+            if args.actuator_enabled and canbus_client is not None else
+            NullActuator()
+        )
+
+        # Create nav_manager and inject actuator
         nav_manager = NavigationManager(
             filter_client=filter_client,
             controller_client=controller_client,
             motion_planner=motion_planner,
             no_stop=args.no_stop,
+            canbus_client=canbus_client,
+            actuator=actuator,
         )
 
         setup_signal_handlers(nav_manager=nav_manager)
-        # Store the main task reference for cancellation
         nav_manager.main_task = asyncio.current_task()
 
         # Run navigation
@@ -530,26 +545,27 @@ async def main(args) -> None:
         # Save navigation progress to JSON file
         progress_path = Path("./visualization/navigation_progress.json")
         try:
-            # Convert protobuf Track objects to simple [x, y, heading] format
             serializable_progress = {}
-            for segment_name, track in nav_manager.navigation_progress.items():
-                x: list[float] = []
-                y: list[float] = []
-                heading: list[float] = []
+            for segment_name, track in (nav_manager.navigation_progress if nav_manager else {}).items():
+                x: List[float] = []
+                y: List[float] = []
+                heading: List[float] = []
 
-                track_waypoints = [Pose3F64.from_proto(pose) for pose in track.waypoints]
+                track_waypoints = [Pose3F64.from_proto(
+                    pose) for pose in track.waypoints]
                 for pose in track_waypoints:
                     x.append(pose.a_from_b.translation[0])
                     y.append(pose.a_from_b.translation[1])
                     heading.append(pose.a_from_b.rotation.log()[-1])
 
                 serializable_progress[segment_name] = {
-                    'waypoints_count': len(track.waypoints),
-                    'x': x,
-                    'y': y,
-                    'heading': heading,
+                    "waypoints_count": len(track.waypoints),
+                    "x": x,
+                    "y": y,
+                    "heading": heading,
                 }
 
+            progress_path.parent.mkdir(parents=True, exist_ok=True)
             with open(progress_path, "w") as f:
                 json.dump(serializable_progress, f, indent=2)
             logger.info(f"✅ Navigation progress saved to {progress_path}")
@@ -558,16 +574,17 @@ async def main(args) -> None:
 
         positions_path = Path("./visualization/robot_positions.json")
         try:
+            positions_path.parent.mkdir(parents=True, exist_ok=True)
             with open(positions_path, "w") as f:
-                json.dump(nav_manager.robot_positions, f, indent=2)
+                json.dump(
+                    getattr(nav_manager, "robot_positions", []), f, indent=2)
             logger.info(f"✅ Robot positions saved to {positions_path}")
         except Exception as e:
             logger.error(f"❌ Failed to save robot positions: {e}")
 
-        if not nav_manager.shutdown_requested:
+        if nav_manager and not nav_manager.shutdown_requested:
             await nav_manager._cleanup()
-
-        sys.exit(1)
+        return
 
 
 if __name__ == "__main__":
@@ -575,12 +592,48 @@ if __name__ == "__main__":
         prog="python main.py", description="Waypoint navigation using MotionPlanner and track_follower service"
     )
 
-    # Required arguments
-    parser.add_argument("--filter-config", type=Path, required=True, help="Path to filter service config JSON file")
-    parser.add_argument("--waypoints-path", type=Path, required=True, help="Path to waypoints JSON file (Track format)")
-    parser.add_argument("--tool-config-path", type=Path, required=True, help="Path to tool configuration JSON file")
+    # Required
+    parser.add_argument("--filter-config", type=Path, required=True,
+                        help="Path to filter service config JSON file")
+    parser.add_argument("--waypoints-path", type=Path, required=True,
+                        help="Path to waypoints JSON file (Track format)")
+    parser.add_argument("--tool-config-path", type=Path,
+                        required=True, help="Path to tool configuration JSON file")
     parser.add_argument(
         "--controller-config", type=Path, required=True, help="Path to track_follower service config JSON file"
+    )
+
+    # Optional CAN bus (for actuator control)
+    parser.add_argument(
+        "--canbus-config",
+        type=Path,
+        required=False,
+        help="Path to CAN bus service config JSON (required if --actuator-enabled).",
+    )
+    parser.add_argument(
+        "--actuator-enabled",
+        action="store_true",
+        help="If set, pulse H-bridge FORWARD briefly when the robot reaches each waypoint.",
+    )
+    parser.add_argument("--actuator-id", type=int, default=0,
+                        help="H-bridge actuator ID (default: 0)")
+    parser.add_argument(
+        "--actuator-forward-seconds",
+        type=float,
+        default=0.3,
+        help="Duration to drive actuator in FORWARD after reaching a waypoint (seconds).",
+    )
+    parser.add_argument(
+        "--actuator-reverse-seconds",
+        type=float,
+        default=0.3,
+        help="Duration to drive actuator in REVERSE after reaching a waypoint (seconds).",
+    )
+    parser.add_argument(
+        "--actuator-rate-hz",
+        type=float,
+        default=10.0,
+        help="Command publish rate to CAN bus while reversing (Hz).",
     )
 
     # MotionPlanner configuration
@@ -596,22 +649,34 @@ if __name__ == "__main__":
         default="left",
         help="Direction to turn at row ends (default: left)",
     )
-    parser.add_argument("--row-spacing", type=float, default=6.0, help="Spacing between rows in meters (default: 3.0)")
+    parser.add_argument(
+        "--row-spacing",
+        type=float,
+        default=6.0,
+        help="Spacing between rows in meters (default: 6.0)",
+    )
     parser.add_argument(
         "--headland-buffer",
         type=float,
         default=2.0,
         help="Buffer distance for headland maneuvers in meters (default: 2.0)",
     )
-    parser.add_argument("--no-stop", action="store_true", help="Disable stopping at each waypoint")
+    parser.add_argument("--no-stop", action="store_true",
+                        help="Disable stopping at each waypoint")
 
     args = parser.parse_args()
 
-    # Validate file paths
+    # Validate required file paths
     for path_arg in [args.filter_config, args.waypoints_path, args.controller_config]:
         if not path_arg.exists():
             logger.error(f"❌ File not found: {path_arg}")
             sys.exit(1)
+
+    # If actuator is enabled, require the CAN bus config
+    if args.actuator_enabled and (not args.canbus_config or not args.canbus_config.exists()):
+        logger.error(
+            "❌ --actuator-enabled was set but --canbus-config is missing or invalid.")
+        sys.exit(1)
 
     # Run the main function
     try:
