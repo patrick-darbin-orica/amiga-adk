@@ -15,7 +15,7 @@ from farm_ng.track.track_pb2 import (
 )
 from google.protobuf.empty_pb2 import Empty
 from utils.actuator import BaseActuator, NullActuator
-from utils.canbus import move_robot_forward
+from utils.canbus import move_robot_forward, trigger_dipbob
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +39,8 @@ class NavigationManager:
         canbus_client: Optional[EventClient] = None,
         actuator_enabled: bool = True,  # TODO: Remove
         actuator_id: int = 0,
-        actuator_forward_seconds: float = 1.5,  # TODO: Remove
-        actuator_reverse_seconds: float = 1.5,
+        actuator_open_seconds: float = 1.5,  # TODO: Remove
+        actuator_close_seconds: float = 1.5,
         actuator_rate_hz: float = 10.0,
     ):
         self.filter_client = filter_client
@@ -63,8 +63,8 @@ class NavigationManager:
         self.actuator_enabled = actuator_enabled and (
             self.canbus_client is not None)
         self.actuator_id = actuator_id
-        self.actuator_forward_seconds = max(0.0, actuator_forward_seconds)
-        self.actuator_reverse_seconds = max(0.0, actuator_reverse_seconds)
+        self.actuator_open_seconds = max(0.0, actuator_open_seconds)
+        self.actuator_close_seconds = max(0.0, actuator_close_seconds)
         self.actuator_rate_hz = max(0.1, actuator_rate_hz)
 
         if actuator_enabled and self.canbus_client is None:
@@ -314,11 +314,16 @@ class NavigationManager:
 
             if success:
                 logger.info("✅ Track segment completed successfully")
+                
+                await asyncio.sleep(2.0)
+                
                 if self.actuator_enabled:
-                    logger.info("Reached actuator part")
+                    await trigger_dipbob("can0")
+                    logger.info("Deploying dipbob")
+                    await asyncio.sleep(5.0) # TODO: Swap for awaiting measurement
                     await self.actuator.pulse_sequence(
-                        forward_seconds=self.actuator_forward_seconds,
-                        reverse_seconds=self.actuator_reverse_seconds,
+                        open_seconds=self.actuator_open_seconds,
+                        close_seconds=self.actuator_close_seconds,
                         rate_hz=self.actuator_rate_hz,
                         settle_before=3.0,     # your current pre‑pulse wait
                         settle_between=1.0

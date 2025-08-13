@@ -15,8 +15,9 @@ from __future__ import annotations
 
 import asyncio
 import time
+import shutil
 from pathlib import Path
-from typing import Optional
+import can
 
 from farm_ng.canbus.canbus_pb2 import Twist2d, RawCanbusMessage
 from farm_ng.core.event_client import EventClient
@@ -50,33 +51,20 @@ async def move_robot_forward(time_goal: float = 1.5) -> None:
         await asyncio.sleep(0.1)
 
 
-async def trigger_dipbob(
-    *,
-    can_id: int = 0x18FF0007,
-    trigger_byte: int = 0x02,
-    repeat: int = 1,            # bump to 2–3 if the RPi sometimes misses a frame
-    period_s: float = 0.02,     # spacing between repeats
-    raw_uri: str = "/raw",      # adjust if your service uses a different path
-    service_config_path: Path = Path("./configs/canbus_config.json"),
-) -> None:
-    """Send the Dipbob trigger CAN frame (like move_robot_forward style)."""
-    # Build the raw CAN message
-    msg = RawCanbusMessage()
-    # 0x18FF0007 (29-bit extended; service infers from value)
-    msg.id = can_id
-    msg.data = bytes([trigger_byte])   # one-byte payload: 0x02
-    msg.error = False
-    msg.remote_transmission = False
+def _send_once_socketcan(bus: can.Bus, data: bytes) -> None:
+    msg = can.Message(
+        arbitration_id=0x18FF0007,
+        data=data,
+        is_extended_id=True,  # 0x18FF0007 is 29-bit
+    )
+    bus.send(msg, timeout=0.1)
 
-    # Create a client to the canbus service (same pattern as move_robot_forward)
-    config: EventServiceConfig = proto_from_json_file(
-        service_config_path, EventServiceConfig())
-    client: EventClient = EventClient(config)
-
-    # Send once (or a few times)
-    for i in range(repeat):
-        print(
-            f"Sending Dipbob trigger: id=0x{can_id:08X}, data={msg.data.hex()}")
-        await client.request_reply(raw_uri, msg)
-        if i + 1 < repeat:
-            await asyncio.sleep(period_s)
+async def trigger_dipbob(iface: str = "can0") -> None:
+    # open/close per call to keep it simple; you can hold the bus persistently elsewhere
+    bus = can.interface.Bus(channel=iface, bustype="socketcan")
+    try:
+        _send_once_socketcan(bus, bytes([0x06, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00]))
+        await asyncio.sleep(0.02)
+        _send_once_socketcan(bus, bytes([0x07, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00]))
+    finally:
+        bus.shutdown()

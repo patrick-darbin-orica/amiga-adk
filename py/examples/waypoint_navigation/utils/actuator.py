@@ -127,10 +127,10 @@ class CanHBridgeActuator(BaseActuator):
             await self.stop()
 
     async def pulse_open(self, seconds: float, rate_hz: float = 10.0) -> None:
-        await self._drive_for(HBridgeCommandType.HBRIDGE_open, seconds, rate_hz)
+        await self._drive_for(HBridgeCommandType.HBRIDGE_FORWARD, seconds, rate_hz)
 
     async def pulse_close(self, seconds: float, rate_hz: float = 10.0) -> None:
-        await self._drive_for(HBridgeCommandType.HBRIDGE_close, seconds, rate_hz)
+        await self._drive_for(HBridgeCommandType.HBRIDGE_REVERSE, seconds, rate_hz)
 
     async def stop(self) -> None:
         if self.client is None:
