@@ -39,7 +39,7 @@ class NavigationManager:
         canbus_client: Optional[EventClient] = None,
         actuator_enabled: bool = True,  # TODO: Remove
         actuator_id: int = 0,
-        actuator_forward_seconds: float = 1.5,
+        actuator_forward_seconds: float = 1.5,  # TODO: Remove
         actuator_reverse_seconds: float = 1.5,
         actuator_rate_hz: float = 10.0,
     ):

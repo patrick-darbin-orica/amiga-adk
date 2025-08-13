@@ -8,4 +8,4 @@ python main.py --filter-config ./configs/filter_config.json \
  --turn-direction left \
  --row-spacing 6.0 \
  --headland-buffer 6.0 \
- --actuator-enabled --actuator-id 0 --actuator-forward-seconds 1.5 --actuator-reverse-seconds 1.5
+ --actuator-enabled --actuator-id 0 --actuator-open-seconds 1.5 --actuator-close-seconds 1.5

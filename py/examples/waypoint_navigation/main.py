@@ -229,21 +229,21 @@ if __name__ == "__main__":
     parser.add_argument(
         "--actuator-enabled",
         action="store_true",
-        help="If set, pulse H-bridge FORWARD briefly when the robot reaches each waypoint.",
+        help="If set, pulse H-bridge OPEN briefly when the robot reaches each waypoint.",
     )
     parser.add_argument("--actuator-id", type=int, default=0,
                         help="H-bridge actuator ID (default: 0)")
     parser.add_argument(
-        "--actuator-forward-seconds",
+        "--actuator-open-seconds",
         type=float,
-        default=0.3,
-        help="Duration to drive actuator in FORWARD after reaching a waypoint (seconds).",
+        default=6,
+        help="Duration to drive actuator in OPEN after reaching a waypoint (seconds).",
     )
     parser.add_argument(
-        "--actuator-reverse-seconds",
+        "--actuator-close-seconds",
         type=float,
-        default=0.3,
-        help="Duration to drive actuator in REVERSE after reaching a waypoint (seconds).",
+        default=6,
+        help="Duration to drive actuator in CLOSE after reaching a waypoint (seconds).",
     )
     parser.add_argument(
         "--actuator-rate-hz",
