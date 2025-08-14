@@ -39,8 +39,8 @@ class NavigationManager:
         canbus_client: Optional[EventClient] = None,
         actuator_enabled: bool = True,  # TODO: Remove
         actuator_id: int = 0,
-        actuator_open_seconds: float = 1.5,  # TODO: Remove
-        actuator_close_seconds: float = 1.5,
+        actuator_open_seconds: float = 6,  # TODO: Remove
+        actuator_close_seconds: float = 6.5,
         actuator_rate_hz: float = 10.0,
     ):
         self.filter_client = filter_client
@@ -320,7 +320,7 @@ class NavigationManager:
                 if self.actuator_enabled:
                     await trigger_dipbob("can0")
                     logger.info("Deploying dipbob")
-                    await asyncio.sleep(5.0) # TODO: Swap for awaiting measurement
+                    await asyncio.sleep(3.0) # TODO: Swap for awaiting measurement
                     await self.actuator.pulse_sequence(
                         open_seconds=self.actuator_open_seconds,
                         close_seconds=self.actuator_close_seconds,
