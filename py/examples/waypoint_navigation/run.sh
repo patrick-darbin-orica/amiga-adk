@@ -1,4 +1,5 @@
 #!/bin/bash
+source ~/farm-ng-amiga/venv/bin/activate
 python main.py --filter-config ./configs/filter_config.json \
  --controller-config ./configs/controller_config.json \
  --tool-config-path ./configs/tool_config.json \
@@ -8,4 +9,4 @@ python main.py --filter-config ./configs/filter_config.json \
  --turn-direction left \
  --row-spacing 6.0 \
  --headland-buffer 6.0 \
- --actuator-enabled --actuator-id 0 --actuator-forward-seconds 1.5 --actuator-reverse-seconds 1.5
+ --actuator-enabled --actuator-id 0 --actuator-open-seconds 6 --actuator-close-seconds 7

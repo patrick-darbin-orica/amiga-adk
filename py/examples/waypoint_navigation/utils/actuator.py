@@ -6,9 +6,9 @@ Actuator abstraction for Amiga waypoint navigation.
   H-bridge via the farm-ng /control_tools endpoint.
 
 Drop this file next to main.py, then modify NavigationManager to accept
-an `actuator` object and replace direct calls to `_pulse_actuator_forward`
-/ `_pulse_actuator_reverse` with `await actuator.pulse_sequence(...)` or the
-more granular `pulse_forward`/`pulse_reverse` calls.
+an `actuator` object and replace direct calls to `_pulse_actuator_open`
+/ `_pulse_actuator_close` with `await actuator.pulse_sequence(...)` or the
+more granular `pulse_open`/`pulse_close` calls.
 
 This module does not import anything from your app code, so it is reusable.
 """
@@ -48,10 +48,10 @@ def _build_hbridge_cmd(hbridge_id: int, cmd: HBridgeCommandType.ValueType) -> Ac
 class BaseActuator:
     """Abstract actuator interface."""
 
-    async def pulse_forward(self, seconds: float, rate_hz: float = 10.0) -> None:
+    async def pulse_open(self, seconds: float, rate_hz: float = 10.0) -> None:
         raise NotImplementedError
 
-    async def pulse_reverse(self, seconds: float, rate_hz: float = 10.0) -> None:
+    async def pulse_close(self, seconds: float, rate_hz: float = 10.0) -> None:
         raise NotImplementedError
 
     async def stop(self) -> None:
@@ -59,22 +59,22 @@ class BaseActuator:
 
     async def pulse_sequence(
         self,
-        forward_seconds: float,
-        reverse_seconds: float,
+        open_seconds: float,
+        close_seconds: float,
         rate_hz: float = 10.0,
         settle_before: float = 0.0,
         settle_between: float = 1.0,
         settle_after: float = 0.0,
     ) -> None:
-        """Convenience: [optional wait] → forward → wait → reverse → [optional wait]."""
+        """Convenience: [optional wait] → open → wait → close → [optional wait]."""
         if settle_before > 0:
             await asyncio.sleep(settle_before)
-        if forward_seconds > 0:
-            await self.pulse_forward(forward_seconds, rate_hz)
+        if open_seconds > 0:
+            await self.pulse_open(open_seconds, rate_hz)
         if settle_between > 0:
             await asyncio.sleep(settle_between)
-        if reverse_seconds > 0:
-            await self.pulse_reverse(reverse_seconds, rate_hz)
+        if close_seconds > 0:
+            await self.pulse_close(close_seconds, rate_hz)
         if settle_after > 0:
             await asyncio.sleep(settle_after)
 
@@ -82,11 +82,11 @@ class BaseActuator:
 class NullActuator(BaseActuator):
     """No-op actuator used when CAN is unavailable or disabled."""
 
-    async def pulse_forward(self, seconds: float, rate_hz: float = 10.0) -> None:  # noqa: ARG002
-        logger.debug("NullActuator: pulse_forward(%ss) ignored", seconds)
+    async def pulse_open(self, seconds: float, rate_hz: float = 10.0) -> None:  # noqa: ARG002
+        logger.debug("NullActuator: pulse_open(%ss) ignored", seconds)
 
-    async def pulse_reverse(self, seconds: float, rate_hz: float = 10.0) -> None:  # noqa: ARG002
-        logger.debug("NullActuator: pulse_reverse(%ss) ignored", seconds)
+    async def pulse_close(self, seconds: float, rate_hz: float = 10.0) -> None:  # noqa: ARG002
+        logger.debug("NullActuator: pulse_close(%ss) ignored", seconds)
 
     async def stop(self) -> None:
         logger.debug("NullActuator: stop() ignored")
@@ -126,10 +126,10 @@ class CanHBridgeActuator(BaseActuator):
             # Always attempt a STOP at the end of any drive
             await self.stop()
 
-    async def pulse_forward(self, seconds: float, rate_hz: float = 10.0) -> None:
+    async def pulse_open(self, seconds: float, rate_hz: float = 10.0) -> None:
         await self._drive_for(HBridgeCommandType.HBRIDGE_FORWARD, seconds, rate_hz)
 
-    async def pulse_reverse(self, seconds: float, rate_hz: float = 10.0) -> None:
+    async def pulse_close(self, seconds: float, rate_hz: float = 10.0) -> None:
         await self._drive_for(HBridgeCommandType.HBRIDGE_REVERSE, seconds, rate_hz)
 
     async def stop(self) -> None:
