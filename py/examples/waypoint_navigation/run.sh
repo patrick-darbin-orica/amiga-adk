@@ -1,9 +1,8 @@
 #!/bin/bash
 source ~/farm-ng-amiga/venv/bin/activate
-python main.py --filter-config ./configs/filter_config.json \
- --controller-config ./configs/controller_config.json \
+python main.py \
+ --config ./configs/config.json \
  --tool-config-path ./configs/tool_config.json \
- --canbus-config ./configs/canbus_config.json \
  --waypoints-path ./surveyed-waypoints/test1.csv \
  --last-row-waypoint-index 4 \
  --turn-direction left \
