@@ -25,7 +25,7 @@ from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 from farm_ng.core.event_client import EventClient
-from farm_ng.core.event_service_pb2 import EventServiceConfig
+from farm_ng.core.event_service_pb2 import EventServiceConfig, EventServiceConfigList
 from farm_ng.core.events_file_reader import proto_from_json_file
 from farm_ng.track.track_pb2 import (
     RobotStatus,
@@ -40,54 +40,15 @@ from google.protobuf.empty_pb2 import Empty
 from motion_planner import MotionPlanner
 from utils.canbus import move_robot_forward
 from utils.navigation_manager import NavigationManager
+from utils.multiclient import MultiClientSubscriber as multi
 
 logger = logging.getLogger("Navigation Manager")
-
-
-async def setup_clients(
-    filter_config_path: Path,
-    controller_config_path: Path,
-    canbus_config_path: Optional[Path] = None,
-) -> Tuple[EventClient, EventClient, Optional[EventClient]]:
-    """Setup EventClients for filter, controller, and optional CAN bus services."""
-    logger.info("🔧 Setting up service clients...")
-
-    # Filter service
-    filter_config = proto_from_json_file(
-        filter_config_path, EventServiceConfig())
-    if filter_config.name != "filter":
-        raise RuntimeError(
-            f"Expected filter service config, got {filter_config.name}")
-    filter_client = EventClient(filter_config)
-
-    # Controller service
-    controller_config = proto_from_json_file(
-        controller_config_path, EventServiceConfig())
-    if controller_config.name != "track_follower":
-        raise RuntimeError(
-            f"Expected track_follower service config, got {controller_config.name}")
-    controller_client = EventClient(controller_config)
-
-    # Optional CAN bus service
-    canbus_client: Optional[EventClient] = None
-    if canbus_config_path is not None:
-        can_config = proto_from_json_file(
-            canbus_config_path, EventServiceConfig())
-        # The name may vary in deployments; not enforcing a specific value here.
-        canbus_client = EventClient(can_config)
-        logger.info(f"✅ CAN bus client: {can_config.name}")
-
-    logger.info(f"✅ Filter client: {filter_config.name}")
-    logger.info(f"✅ Controller client: {controller_config.name}")
-
-    return filter_client, controller_client, canbus_client
-
 
 def setup_signal_handlers(nav_manager: NavigationManager) -> None:
     """Setup signal handlers for graceful shutdown."""
 
     def signal_handler(signum, frame):
-        logger.info(f"\n🛑 Received signal {signum}, initiating shutdown...")
+        logger.info(f"\nReceived signal {signum}, initiating shutdown...")
         nav_manager.shutdown_requested = True
 
         if nav_manager.main_task and not nav_manager.main_task.done():
@@ -96,7 +57,7 @@ def setup_signal_handlers(nav_manager: NavigationManager) -> None:
         if hasattr(signal_handler, "call_count"):
             signal_handler.call_count += 1
             if signal_handler.call_count > 1:
-                logger.info("🛑 Second signal received, forcing exit")
+                logger.info("Second signal received, forcing exit")
                 sys.exit(1)
         else:
             signal_handler.call_count = 1
@@ -109,14 +70,17 @@ async def main(args) -> None:
     """Main function to orchestrate waypoint navigation."""
     nav_manager = None
     actuator: BaseActuator = NullActuator()
-    try:
-        # Setup clients (CAN bus optional)
-        filter_client, controller_client, canbus_client = await setup_clients(
-            args.filter_config, args.controller_config, args.canbus_config
-        )
+    
+    service_config_list = proto_from_json_file(args.config, EventServiceConfigList())
+    mc = multi(service_config_list)
 
+    filter_client = mc.clients["filter"]
+    controller_client = mc.clients["track_follower"]
+    canbus_client = mc.clients.get("canbus")
+
+    try:
         # Initialize motion planner
-        logger.info("🗺️  Initializing motion planner...")
+        logger.info("Initializing motion planner...")
         motion_planner = MotionPlanner(
             client=filter_client,
             tool_config_path=args.tool_config_path,
@@ -151,11 +115,11 @@ async def main(args) -> None:
         await nav_manager.run_navigation()
 
     except asyncio.CancelledError:
-        logger.info("🛑 Main task cancelled")
+        logger.info("Main task cancelled")
     except KeyboardInterrupt:
-        logger.info("🛑 Keyboard interrupt in main")
+        logger.info("Keyboard interrupt in main")
     except Exception as e:
-        logger.error(f"💥 Fatal error: {e}")
+        logger.error(f"FATAL ERROR: {e}")
 
     finally:
         # Save navigation progress to JSON file
@@ -184,9 +148,9 @@ async def main(args) -> None:
             progress_path.parent.mkdir(parents=True, exist_ok=True)
             with open(progress_path, "w") as f:
                 json.dump(serializable_progress, f, indent=2)
-            logger.info(f"✅ Navigation progress saved to {progress_path}")
+            logger.info(f"Navigation progress saved to {progress_path}")
         except Exception as e:
-            logger.error(f"❌ Failed to save navigation progress: {e}")
+            logger.error(f"FAILED to save navigation progress: {e}")
 
         positions_path = Path("./visualization/robot_positions.json")
         try:
@@ -194,9 +158,9 @@ async def main(args) -> None:
             with open(positions_path, "w") as f:
                 json.dump(
                     getattr(nav_manager, "robot_positions", []), f, indent=2)
-            logger.info(f"✅ Robot positions saved to {positions_path}")
+            logger.info(f"Robot positions saved to {positions_path}")
         except Exception as e:
-            logger.error(f"❌ Failed to save robot positions: {e}")
+            logger.error(f"FAILED to save robot positions: {e}")
 
         if nav_manager and not nav_manager.shutdown_requested:
             await nav_manager._cleanup()
@@ -207,25 +171,11 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         prog="python main.py", description="Waypoint navigation using MotionPlanner and track_follower service"
     )
-
     # Required
-    parser.add_argument("--filter-config", type=Path, required=True,
-                        help="Path to filter service config JSON file")
     parser.add_argument("--waypoints-path", type=Path, required=True,
                         help="Path to waypoints JSON file (Track format)")
     parser.add_argument("--tool-config-path", type=Path,
                         required=True, help="Path to tool configuration JSON file")
-    parser.add_argument(
-        "--controller-config", type=Path, required=True, help="Path to track_follower service config JSON file"
-    )
-
-    # Optional CAN bus (for actuator control)
-    parser.add_argument(
-        "--canbus-config",
-        type=Path,
-        required=False,
-        help="Path to CAN bus service config JSON (required if --actuator-enabled).",
-    )
     parser.add_argument(
         "--actuator-enabled",
         action="store_true",
@@ -278,29 +228,22 @@ if __name__ == "__main__":
         help="Buffer distance for headland maneuvers in meters (default: 2.0)",
     )
     parser.add_argument("--no-stop", action="store_true",
-                        help="Disable stopping at each waypoint")
-
+                        help="Disable stopping at each waypoint"
+    )
+    parser.add_argument("--config", 
+                        type=Path, 
+                        required=True, 
+                        help="The system config."
+    )
     args = parser.parse_args()
-
-    # Validate required file paths
-    for path_arg in [args.filter_config, args.waypoints_path, args.controller_config]:
-        if not path_arg.exists():
-            logger.error(f"❌ File not found: {path_arg}")
-            sys.exit(1)
-
-    # If actuator is enabled, require the CAN bus config
-    if args.actuator_enabled and (not args.canbus_config or not args.canbus_config.exists()):
-        logger.error(
-            "❌ --actuator-enabled was set but --canbus-config is missing or invalid.")
-        sys.exit(1)
 
     # Run the main function
     try:
         asyncio.run(main(args))
     except KeyboardInterrupt:
-        logger.info("\n🛑 Final keyboard interrupt")
+        logger.info("\nFinal keyboard interrupt")
     except Exception as e:
-        logger.error(f"💥 Unhandled exception: {e}")
+        logger.error(f"Unhandled exception: {e}")
     finally:
-        logger.info("👋 Script terminated")
+        logger.info("Script terminated")
         sys.exit(0)

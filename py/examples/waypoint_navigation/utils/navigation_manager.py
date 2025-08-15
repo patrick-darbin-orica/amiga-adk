@@ -39,8 +39,8 @@ class NavigationManager:
         canbus_client: Optional[EventClient] = None,
         actuator_enabled: bool = True,  # TODO: Remove
         actuator_id: int = 0,
-        actuator_open_seconds: float = 6,  # TODO: Remove
-        actuator_close_seconds: float = 6.5,
+        actuator_open_seconds: float = 6.5, 
+        actuator_close_seconds: float = 7,
         actuator_rate_hz: float = 10.0,
     ):
         self.filter_client = filter_client
@@ -92,36 +92,36 @@ class NavigationManager:
 
                 self.robot_positions.append(position_record)
                 logger.info(
-                    f"📍 Recorded robot position for segment '{segment_name}': "
+                    f"Recorded robot position for segment '{segment_name}': "
                     f"({x:.2f}, {y:.2f}, {np.degrees(heading):.1f}°)"
                 )
             except Exception as e:
-                logger.error(f"❌ Failed to record robot position: {e}")
+                logger.error(f"FAIL: Record robot position: {e}")
 
     async def set_track(self, track: Track) -> None:
         """Set the track for the track_follower to follow."""
         logger.info(
-            f"📤 Setting track with {len(track.waypoints)} waypoints...")
+            f"Setting track with {len(track.waypoints)} waypoints...")
         try:
             await self.controller_client.request_reply("/set_track", TrackFollowRequest(track=track))
-            logger.info("✅ Track set successfully")
+            logger.info("SUCCESS: Track set")
         except Exception as e:
-            logger.error(f"❌ Failed to set track: {e}")
+            logger.error(f"FAIL: Track not set {e}")
             raise
 
     async def start_following(self) -> None:
         """Start following the currently set track."""
-        logger.info("🚀 Starting track following...")
+        logger.info("Starting track following...")
         try:
             await self.controller_client.request_reply("/start", Empty())
-            logger.info("✅ Track following started")
+            logger.info("START: Track following")
         except Exception as e:
-            logger.error(f"❌ Failed to start track following: {e}")
+            logger.error(f"FAIL: track following not started: {e}")
             raise
 
     async def monitor_track_state(self) -> None:
         """Monitor the track_follower state and set events based on status."""
-        logger.info("👁️  Starting track state monitoring...")
+        logger.info("Starting track state monitoring...")
 
         try:
             config = self.controller_client.config
@@ -129,17 +129,17 @@ class NavigationManager:
 
             async for event, message in self.controller_client.subscribe(subscription, decode=True):
                 if self.shutdown_requested:
-                    logger.info("🛑 Monitor task received shutdown signal")
+                    logger.info("SHUTDOWN: Monitor task received shutdown signal")
                     break
 
                 if isinstance(message, TrackFollowerState):
                     await self._process_track_state(message)
 
         except asyncio.CancelledError:
-            logger.info("🛑 Monitor task cancelled")
+            logger.info("STOP: Monitor task cancelled")
             raise
         except Exception as e:
-            logger.error(f"❌ Error monitoring track state: {e}")
+            logger.error(f"ERROR: Monitoring track state: {e}")
             self.track_failed_event.set()
 
     async def _process_track_state(self, state: TrackFollowerState) -> None:
@@ -155,13 +155,13 @@ class NavigationManager:
         if prev_status != track_status:
             try:
                 status_name = TrackStatusEnum.Name(track_status)
-                logger.info(f"📊 Track status changed: {status_name}")
+                logger.info(f"Track status changed: {status_name}")
             except Exception as e:
-                logger.error(f"❌ Error getting status name: {e}")
+                logger.error(f"ERROR: getting status name: {e}")
 
         # Check for completion or failure
         if track_status == TrackStatusEnum.TRACK_COMPLETE:
-            logger.info("🎉 Track completed successfully!")
+            logger.info("SUCCESS: Track completed")
             self.track_complete_event.set()
 
         elif track_status in [
@@ -171,9 +171,9 @@ class NavigationManager:
         ]:
             try:
                 status_name = TrackStatusEnum.Name(track_status)
-                logger.info(f"💥 Track failed with status: {status_name}")
+                logger.info(f"ERROR: Track failed with status: {status_name}")
             except Exception as e:
-                logger.error(f"❌ Error getting status name: {e}")
+                logger.error(f"ERROR: getting status name: {e}")
 
             if not robot_controllable:
                 try:
@@ -185,7 +185,7 @@ class NavigationManager:
                         except Exception as e:
                             failure_modes.append(f"UNKNOWN({mode})")
                             logger.error(
-                                f"❌ Error getting failure mode name: {e}")
+                                f"ERROR: getting failure mode name: {e}")
 
                     logger.info(
                         f"Robot not controllable. Failure modes: {failure_modes}")
@@ -204,19 +204,19 @@ class NavigationManager:
             error = state.progress.cross_track_error
             if error.total_distance > 0.5:  # Only log if significant error
                 logger.warning(
-                    f"⚠️  Cross-track error: {error.total_distance:.2f}m "
+                    f"ERROR: Cross-track: {error.total_distance:.2f}m "
                     f"(lateral: {error.lateral_distance:.2f}m, "
                     f"longitudinal: {error.longitudinal_distance:.2f}m)"
                 )
 
     async def _cleanup(self):
         """Clean up resources and cancel tasks."""
-        logger.info("🧹 Starting cleanup...")
+        logger.info("Starting cleanup...")
 
         self.shutdown_requested = True
 
         if self.monitor_task and not self.monitor_task.done():
-            logger.info("🛑 Cancelling monitor task...")
+            logger.info("Cancelling monitor task...")
             self.monitor_task.cancel()
             try:
                 await self.monitor_task
@@ -226,20 +226,20 @@ class NavigationManager:
         try:
             await self.motion_planner._shutdown()
         except Exception as e:
-            logger.error(f"❌ Error shutting down motion planner: {e}")
+            logger.error(f"ERROR when shutting down motion planner: {e}")
 
-        logger.info("✅ Cleanup completed")
+        logger.info("Cleanup completed")
 
     def get_user_choice(self) -> str:
         """Get user input for navigation choice."""
         if self.no_stop or "waypoint" not in self.curr_segment_name:
             logger.info(
-                "🚀 Either no stop mode enabled or going to the next row, automatically continuing to next waypoint"
+                "Either no stop mode enabled or going to the next row, automatically continuing to next waypoint"
             )
             return "continue"
 
         print("\n" + "=" * 50)
-        print("🤖 NAVIGATION CHOICE")
+        print("NAVIGATION CHOICE")
         print("=" * 50)
         print("What would you like to do next?")
         print("  1. Continue to the next waypoint")
@@ -252,24 +252,24 @@ class NavigationManager:
                 choice = input("Enter your choice (1/2/q): ").strip().lower()
 
                 if choice in ["1", "c", "continue"]:
-                    print("➡️  Continuing to next waypoint...")
+                    print("Continuing to next waypoint...")
                     return "continue"
                 elif choice in ["2", "r", "redo"]:
-                    print("🔄 Redoing current segment...")
+                    print("Redoing current segment...")
                     return "redo"
                 elif choice in ["q", "quit", "exit"]:
-                    print("🛑 Quitting navigation...")
+                    print("Quitting navigation...")
                     return "quit"
                 else:
-                    print("❌ Invalid choice. Please enter 1, 2, or q.")
+                    print("Invalid choice. Please enter 1, 2, or q.")
 
             except (EOFError, KeyboardInterrupt):
-                print("\n🛑 Navigation interrupted by user")
+                print("\nNavigation interrupted by user")
                 return "quit"
 
     async def wait_for_track_completion(self, timeout: float = 60.0) -> bool:
         """Wait for track to complete or fail."""
-        logger.info(f"⏳ Waiting for track completion (timeout: {timeout}s)...")
+        logger.info(f"Waiting for track completion (timeout: {timeout}s)...")
 
         try:
             done, pending = await asyncio.wait(
@@ -285,7 +285,7 @@ class NavigationManager:
                 task.cancel()
 
             if not done:
-                logger.warning("⏰ Timeout waiting for track completion")
+                logger.warning("Timeout waiting for track completion")
                 return False
 
             if self.track_complete_event.is_set():
@@ -294,7 +294,7 @@ class NavigationManager:
                 return False
 
         except Exception as e:
-            logger.error(f"❌ Error waiting for track completion: {e}")
+            logger.error(f"ERROR: waiting for track completion: {e}")
             return False
 
         return False
@@ -313,7 +313,7 @@ class NavigationManager:
             success = await self.wait_for_track_completion(timeout)
 
             if success:
-                logger.info("✅ Track segment completed successfully")
+                logger.info("SUCCESS: Track segment completed")
                 
                 await asyncio.sleep(2.0)
                 
@@ -329,17 +329,17 @@ class NavigationManager:
                         settle_between=1.0
                     )
             else:
-                logger.warning("❌ Track segment failed or timed out")
+                logger.warning("ERROR: Track segment failed or timed out")
 
             return success
 
         except Exception as e:
-            logger.error(f"❌ Error executing track: {e}")
+            logger.error(f"ERROR: executing track: {e}")
             return False
 
     async def run_navigation(self) -> None:
         """Run the complete waypoint navigation sequence."""
-        logger.info("🚁 Starting waypoint navigation...")
+        logger.info("Starting waypoint navigation...")
         self.monitor_task = asyncio.create_task(self.monitor_track_state())
 
         try:
@@ -347,19 +347,19 @@ class NavigationManager:
 
             while not self.shutdown_requested:
                 if self.shutdown_requested:
-                    logger.info("🛑 Shutdown requested, stopping navigation")
+                    logger.info("Shutdown requested, stopping navigation")
                     break
 
                 user_choice: str = self.get_user_choice()
 
                 if user_choice == "quit":
-                    logger.info("🛑 User requested quit, stopping navigation")
+                    logger.info("User requested quit, stopping navigation")
                     self.shutdown_requested = True
                     break
 
                 if user_choice == "redo":
                     logger.info(
-                        "🔄 Redoing last segment with recalculated path...")
+                        "Redoing last segment with recalculated path...")
                     (track_segment, segment_name) = await self.motion_planner.redo_last_segment()
                 else:
                     (track_segment, segment_name) = await self.motion_planner.next_track_segment()
@@ -368,7 +368,7 @@ class NavigationManager:
 
                 if track_segment is None:
                     logger.info(
-                        "🏁 No more track segments. Navigation complete!")
+                        "No more track segments. Navigation complete!")
                     self.record_robot_position("Final waypoint")
                     break
 
@@ -381,7 +381,7 @@ class NavigationManager:
 
                 segment_count += 1
                 logger.info(
-                    f"📍 Executing track segment {segment_count} with {len(track_segment.waypoints)} waypoints"
+                    f"Executing track segment {segment_count} with {len(track_segment.waypoints)} waypoints"
                 )
 
                 success = await self.execute_single_track(track_segment)
@@ -391,7 +391,7 @@ class NavigationManager:
                     if self.shutdown_requested:
                         break
                     logger.warning(
-                        f"💥 Failed to execute segment {segment_count}. Stopping navigation.")
+                        f"Failed to execute segment {segment_count}. Stopping navigation.")
                     failed_attempts += 1
                     if segment_count == 1 and failed_attempts > 5:
                         await move_robot_forward(time_goal=1.5)
@@ -402,14 +402,14 @@ class NavigationManager:
                     success = await self.execute_single_track(track_segment)
 
             logger.info(
-                f"🎯 Navigation completed after {segment_count} segments")
+                f"Navigation completed after {segment_count} segments")
 
         except asyncio.CancelledError:
-            logger.info("🛑 Navigation task cancelled")
+            logger.info("Navigation task cancelled")
             raise
         except KeyboardInterrupt:
-            logger.info("\n🛑 Navigation interrupted by user")
+            logger.info("\nNavigation interrupted by user")
         except Exception as e:
-            logger.error(f"💥 Navigation failed with error: {e}")
+            logger.error(f"Navigation failed with error: {e}")
         finally:
             await self._cleanup()
