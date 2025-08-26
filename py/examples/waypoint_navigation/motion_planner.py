@@ -17,7 +17,7 @@ import asyncio
 import json
 import logging
 from enum import Enum
-from math import radians
+from math import radians, cos, sin, hypot
 from pathlib import Path
 from typing import Dict
 from typing import Optional
@@ -319,6 +319,35 @@ class MotionPlanner:
         else:
             return FirstManeuver.LATERAL_CORRECTION
 
+    async def build_track_to_robot_relative_goal(
+        self, x_fwd_m: float, y_left_m: float, standoff_m: float = 0.75, spacing: float = 0.1
+        ):
+        """Convert (x_fwd,y_left) in robot frame into a world pose and build a short AB track."""
+        current_pose = await self._get_current_pose()  # uses your running filter task 
+        yaw = current_pose.a_from_b.rotation.log()[-1]
+
+        # standoff along the ray
+        dist = hypot(x_fwd_m, y_left_m)
+        if dist > standoff_m:
+            k = (dist - standoff_m) / dist
+            x_fwd_m *= k; y_left_m *= k
+        else:
+            x_fwd_m *= 0.9; y_left_m *= 0.9
+
+        c, s = cos(yaw), sin(yaw)
+        dx_w =  x_fwd_m*c - y_left_m*s
+        dy_w =  x_fwd_m*s + y_left_m*c
+
+        goal_t = current_pose.a_from_b.translation.copy()
+        goal_t[0] += dx_w; goal_t[1] += dy_w
+
+        # keep heading same (bearing‑agnostic arrival)
+        goal = Pose3F64(Isometry3F64(goal_t, Rotation3F64.Rz(yaw)), frame_a="world", frame_b="vision_goal")
+
+        tb = TrackBuilder(start=current_pose)
+        tb.create_ab_segment(next_frame_b="vision_goal", final_pose=goal, spacing=spacing)  # 
+        return tb.track, goal
+    
     async def _create_lateral_correction(self) -> Track:
         "Drive robot perpendicular to correct lateral offset, then approach goal."
 

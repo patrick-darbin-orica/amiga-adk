@@ -57,6 +57,9 @@ class NavigationManager:
         self.curr_segment_name: str = "start"
         self.no_stop = no_stop
         self.actuator = actuator or NullActuator()
+        self.vision_active: bool = False
+        self._controller_lock = asyncio.Lock()
+
 
         # Actuator / CAN config
         self.canbus_client = canbus_client
@@ -98,26 +101,48 @@ class NavigationManager:
             except Exception as e:
                 logger.error(f"FAIL: Record robot position: {e}")
 
-    async def set_track(self, track: Track) -> None:
-        """Set the track for the track_follower to follow."""
-        logger.info(
-            f"Setting track with {len(track.waypoints)} waypoints...")
-        try:
-            await self.controller_client.request_reply("/set_track", TrackFollowRequest(track=track))
-            logger.info("SUCCESS: Track set")
-        except Exception as e:
-            logger.error(f"FAIL: Track not set {e}")
-            raise
+    async def replace_track_and_start(self, track) -> None:
+        async with self._controller_lock:
+            # 0) ensure robot is controllable / auto-mode on (optional but smart)
+            st = await self._get_follower_state()
+            if not st.robot_status.controllable:
+                raise RuntimeError(f"Robot not controllable. Failure modes: {[m.name for m in st.robot_status.failure_modes]}")
 
-    async def start_following(self) -> None:
-        """Start following the currently set track."""
-        logger.info("Starting track following...")
-        try:
+            # 1) cancel current (ignore errors if idle)
+            try:
+                await self.controller_client.request_reply("/cancel", Empty())
+            except Exception:
+                pass
+
+            # 2) wait until not FOLLOWING anymore
+            await self._wait_until(lambda s: s.status != TrackFollowerState.TRACK_FOLLOWING, timeout=3.0)
+
+            # 3) set the new track (proto, not bytes)
+            req = TrackFollowRequest(track=track)
+            await self.controller_client.request_reply("/set_track", req)
+
+            # 4) wait until LOADED, then start
+            await self._wait_until(lambda s: s.status == TrackFollowerState.TRACK_LOADED, timeout=2.0)
             await self.controller_client.request_reply("/start", Empty())
-            logger.info("START: Track following")
-        except Exception as e:
-            logger.error(f"FAIL: track following not started: {e}")
-            raise
+
+            # 5) confirm it actually started
+            await self._wait_until(lambda s: s.status == TrackFollowerState.TRACK_FOLLOWING, timeout=2.0)
+
+    async def _get_follower_state(self) -> TrackFollowerState:
+        raw = await self.controller_client.request_reply("/get_state", Empty(), decode=False)
+        st = TrackFollowerState()
+        st.ParseFromString(raw)
+        return st
+
+    async def _wait_until(self, pred, timeout: float):
+        import time
+        t0 = time.monotonic()
+        while time.monotonic() - t0 < timeout:
+            st = await self._get_follower_state()
+            if pred(st):
+                return st
+            await asyncio.sleep(0.05)
+        raise TimeoutError("wait condition not met")
 
     async def monitor_track_state(self) -> None:
         """Monitor the track_follower state and set events based on status."""
@@ -230,6 +255,11 @@ class NavigationManager:
 
         logger.info("Cleanup completed")
 
+    async def _hold_if_vision_active(self) -> None:
+        """Pause row/waypoint progression while a vision override is running."""
+        while self.vision_active and not self.shutdown_requested:
+            await asyncio.sleep(0.05)
+
     def get_user_choice(self) -> str:
         """Get user input for navigation choice."""
         if self.no_stop or "waypoint" not in self.curr_segment_name:
@@ -321,13 +351,13 @@ class NavigationManager:
                     await trigger_dipbob("can0")
                     logger.info("Deploying dipbob")
                     await asyncio.sleep(3.0) # TODO: Swap for awaiting measurement
-                    await self.actuator.pulse_sequence(
-                        open_seconds=self.actuator_open_seconds,
-                        close_seconds=self.actuator_close_seconds,
-                        rate_hz=self.actuator_rate_hz,
-                        settle_before=3.0,     # your current pre‑pulse wait
-                        settle_between=1.0
-                    )
+                    # await self.actuator.pulse_sequence( # UNCOMMENT TO USE CHUTE
+                    #     open_seconds=self.actuator_open_seconds,
+                    #     close_seconds=self.actuator_close_seconds,
+                    #     rate_hz=self.actuator_rate_hz,
+                    #     settle_before=3.0,     # your current pre‑pulse wait
+                    #     settle_between=1.0
+                    # )
             else:
                 logger.warning("ERROR: Track segment failed or timed out")
 
@@ -349,14 +379,17 @@ class NavigationManager:
                 if self.shutdown_requested:
                     logger.info("Shutdown requested, stopping navigation")
                     break
-
+                
+                await self._hold_if_vision_active()
                 user_choice: str = self.get_user_choice()
 
                 if user_choice == "quit":
                     logger.info("User requested quit, stopping navigation")
                     self.shutdown_requested = True
                     break
-
+                
+                # Respect any vision override before (re)planning
+                await self._hold_if_vision_active()
                 if user_choice == "redo":
                     logger.info(
                         "Redoing last segment with recalculated path...")
@@ -384,6 +417,8 @@ class NavigationManager:
                     f"Executing track segment {segment_count} with {len(track_segment.waypoints)} waypoints"
                 )
 
+                # Don’t launch execution while vision overrides are active
+                await self._hold_if_vision_active()
                 success = await self.execute_single_track(track_segment)
                 failed_attempts: int = 0
 
