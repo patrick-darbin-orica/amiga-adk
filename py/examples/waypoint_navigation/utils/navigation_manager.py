@@ -39,8 +39,8 @@ class NavigationManager:
         canbus_client: Optional[EventClient] = None,
         actuator_enabled: bool = True,  # TODO: Remove
         actuator_id: int = 0,
-        actuator_open_seconds: float = 6.5, 
-        actuator_close_seconds: float = 7,
+        actuator_open_seconds: float = 0.2,#6.5, 
+        actuator_close_seconds: float = 0.3,#7,
         actuator_rate_hz: float = 10.0,
     ):
         self.filter_client = filter_client
@@ -299,7 +299,7 @@ class NavigationManager:
 
         return False
 
-    async def execute_single_track(self, track: Track, timeout: float = 30.0) -> bool:
+    async def execute_single_track(self, track: Track, timeout: float = 30.0, *, do_post_actions: bool = True) -> bool:
         """Execute a single track segment and wait for completion."""
         self.track_complete_event.clear()
         self.track_failed_event.clear()
@@ -314,19 +314,29 @@ class NavigationManager:
 
             if success:
                 logger.info("SUCCESS: Track segment completed")
-                
-                await asyncio.sleep(2.0)
-                
-                if self.actuator_enabled:
+                if do_post_actions and self.actuator_enabled:
+                    # 1) wait briefly
+                    await asyncio.sleep(2.0)
+
+                    # 2) Deploy plumbob (tool already over hole)
                     await trigger_dipbob("can0")
                     logger.info("Deploying dipbob")
-                    await asyncio.sleep(3.0) # TODO: Swap for awaiting measurement
+                    await asyncio.sleep(3.0)  # TODO: swap for measurement await
+
+                    # 3) Move forward so robot origin is over the hole
+                    origin_track = await self.motion_planner.create_tool_to_origin_segment()
+                    ok2 = await self.execute_single_track(origin_track, timeout=15.0, do_post_actions=False)
+                    if not ok2:
+                        logger.warning("tool→origin micro-segment failed; skipping chute pulse")
+                        return success  # don't open chute if failed
+
+                    # 4) Open/close chute
                     await self.actuator.pulse_sequence(
                         open_seconds=self.actuator_open_seconds,
                         close_seconds=self.actuator_close_seconds,
                         rate_hz=self.actuator_rate_hz,
-                        settle_before=3.0,     # your current pre‑pulse wait
-                        settle_between=1.0
+                        settle_before=3.0,
+                        settle_between=1.0,
                     )
             else:
                 logger.warning("ERROR: Track segment failed or timed out")

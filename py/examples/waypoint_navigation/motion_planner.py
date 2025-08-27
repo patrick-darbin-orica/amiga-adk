@@ -169,20 +169,23 @@ class MotionPlanner:
         self.pose_query_task = asyncio.create_task(self._update_current_pose())
 
     def _load_tool_offset(self, tool_offsets_path: Path) -> Pose3F64:
-        """Load tool offset from JSON file."""
+        """Load tool offset from JSON file, but flip so planner aligns robot origin on waypoint first."""
         with open(tool_offsets_path, 'r') as f:
             offset_data = json.load(f)
 
         translation = offset_data["translation"]
-        robot_from_tool = Pose3F64(
+
+        # Define tool_from_robot instead of robot_from_tool
+        tool_from_robot = Pose3F64(
             a_from_b=Isometry3F64(
-                translation=[translation["x"], translation["y"],
-                             translation["z"]], rotation=Rotation3F64()
+                translation=[translation["x"], translation["y"], translation["z"]],
+                rotation=Rotation3F64()
             ),
-            frame_a="robot",
-            frame_b="tool",
+            frame_a="tool",
+            frame_b="robot",
         )
-        return robot_from_tool
+        return tool_from_robot
+
 
     def _transform_holes_to_robot_poses(self, hole_poses: Dict[int, Pose3F64]) -> Dict[int, Pose3F64]:
         """Transform hole coordinates to robot center coordinates."""
@@ -239,6 +242,15 @@ class MotionPlanner:
             await asyncio.sleep(0.5)  # Wait for the pose to be updated
 
         return current_pose
+
+    async def create_tool_to_origin_segment(self) -> Track:
+        """Micro-move: plumbob→chute/origin. Here we only need +0.22 m forward."""
+        advance_m = 0.22  # your measured value
+        current = await self._get_current_pose()
+        tb = TrackBuilder(start=current)
+        tb.create_straight_segment(next_frame_b="tool_to_origin", distance=advance_m, spacing=0.05)
+        return tb.track
+
 
     def _angle_difference(self, from_angle: float, to_angle: float) -> float:
         """Calculate the shortest angular difference between two angles."""
