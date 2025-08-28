@@ -1,0 +1,6 @@
+{
+    "name": "oak_spatial",
+    "port": 50100,
+    "host": "localhost",
+    "log_level": "INFO"
+}
