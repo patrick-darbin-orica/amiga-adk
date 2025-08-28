@@ -336,7 +336,10 @@ class NavigationManager:
                         close_seconds=self.actuator_close_seconds,
                         rate_hz=self.actuator_rate_hz,
                         settle_before=3.0,
-                        settle_between=1.0,
+                        settle_between=0.0,
+                        wait_for_enter_between=True,
+                        enter_prompt="Hole measured. Press ENTER to close the chute...",
+                        enter_timeout=30.0,      # optional: add a safety timeout if you want
                     )
             else:
                 logger.warning("ERROR: Track segment failed or timed out")

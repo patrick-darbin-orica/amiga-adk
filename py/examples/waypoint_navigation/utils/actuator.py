@@ -57,6 +57,30 @@ class BaseActuator:
     async def stop(self) -> None:
         raise NotImplementedError
 
+    async def _wait_for_enter(self, prompt: str = "Press ENTER to close the chute...",
+                              timeout: float | None = None) -> None:
+        """
+        Non-blocking wait for a single ENTER keypress (runs input() in a thread).
+        If no TTY or an error occurs, we fall back to a short sleep.
+        """
+        loop = asyncio.get_running_loop()
+
+        def _input_blocking():
+            try:
+                return input(prompt + " ")
+            except Exception:
+                # e.g., no TTY / redirected stdin
+                return None
+
+        try:
+            if timeout is None:
+                await loop.run_in_executor(None, _input_blocking)
+            else:
+                await asyncio.wait_for(loop.run_in_executor(None, _input_blocking), timeout=timeout)
+        except (asyncio.TimeoutError, Exception):
+            # Timeout or no-stdin: don’t derail the pipeline; just continue.
+            logger.warning("ENTER wait skipped (timeout or no interactive stdin)")
+
     async def pulse_sequence(
         self,
         open_seconds: float,
@@ -65,16 +89,28 @@ class BaseActuator:
         settle_before: float = 0.0,
         settle_between: float = 1.0,
         settle_after: float = 0.0,
+        *,
+        wait_for_enter_between: bool = False,
+        enter_prompt: str = "Press ENTER to close the chute...",
+        enter_timeout: float | None = None,
     ) -> None:
-        """Convenience: [optional wait] → open → wait → close → [optional wait]."""
+        """Convenience: [optional wait] → open → (wait|ENTER) → close → [optional wait]."""
         if settle_before > 0:
             await asyncio.sleep(settle_before)
+
         if open_seconds > 0:
             await self.pulse_open(open_seconds, rate_hz)
-        if settle_between > 0:
+
+        # Replace the fixed sleep with an optional required ENTER keypress.
+        if wait_for_enter_between:
+            # Try non-blocking console wait; if unavailable, fall back to settle_between.
+            await self._wait_for_enter(prompt=enter_prompt, timeout=enter_timeout)
+        elif settle_between > 0:
             await asyncio.sleep(settle_between)
+
         if close_seconds > 0:
             await self.pulse_close(close_seconds, rate_hz)
+
         if settle_after > 0:
             await asyncio.sleep(settle_after)
 
