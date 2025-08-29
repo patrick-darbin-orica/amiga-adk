@@ -78,6 +78,15 @@ def _poses_from_csv(csv_path: Path) -> dict[int, Pose3F64]:
                             frame_b="hole", tangent_of_b_in_a=zero_tangent)
     return poses
 
+def offset_towards(start_xy, target_xy, offset_m):
+    sx, sy = start_xy
+    tx, ty = target_xy
+    dx, dy = tx - sx, ty - sy
+    dist = hypot(dx, dy)
+    if dist <= 1e-6 or offset_m <= 0:
+        return (tx, ty)
+    scale = max((dist - offset_m) / dist, 0.0)
+    return (sx + dx * scale, sy + dy * scale)
 
 class FirstManeuver(Enum):
     """Enum to represent the first maneuver type."""

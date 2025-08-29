@@ -17,7 +17,7 @@ from farm_ng_core_pybind import Rotation3F64
 
 # ---------------- Model / rates ----------------
 modelDescription = dai.NNModelDescription("luxonis/ppe-detection:640x640")
-FPS = 30
+FPS = 15
 
 # ---------------- Camera / FOV ----------------
 USE_RGB_FOV     = True
@@ -367,11 +367,15 @@ class SpatialVisualizer:
             maybe_emit_cone_goal(x_fwd, y_left, det.confidence)
             
             if math.isfinite(x_fwd) and math.isfinite(y_left):
-                ys_left.append(y_left)
+                
+                # (flip left/right only for the scatter view)
+                y_plot = -y_left
+                ys_left.append(y_plot)
                 xs_fwd.append(x_fwd)
+                
                 if KEEP_HISTORY:
                     # reuse history buffers: store (y_left, x_fwd)
-                    self.hist_x.append(y_left)
+                    self.hist_x.append(y_plot)
                     self.hist_z.append(x_fwd)
 
         now = time.time()
@@ -462,6 +466,8 @@ sdn.input.setBlocking(False)
 sdn.setBoundingBoxScaleFactor(0.5)
 sdn.setDepthLowerThreshold(100)
 sdn.setDepthUpperThreshold(5000)
+sdn.setNumInferenceThreads(2)
+sdn.setNumNCEPerInferenceThread(1)
 
 # Links (request mono outputs, feed StereoDepth)
 monoL.requestOutput((640, 400)).link(stereo.left)

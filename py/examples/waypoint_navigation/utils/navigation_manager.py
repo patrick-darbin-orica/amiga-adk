@@ -101,6 +101,17 @@ class NavigationManager:
             except Exception as e:
                 logger.error(f"FAIL: Record robot position: {e}")
 
+    async def set_track(self, track: Track) -> None:
+        """Set the track for the track_follower to follow."""
+        logger.info(
+            f"Setting track with {len(track.waypoints)} waypoints...")
+        try:
+            await self.controller_client.request_reply("/set_track", TrackFollowRequest(track=track))
+            logger.info("SUCCESS: Track set")
+        except Exception as e:
+            logger.error(f"FAIL: Track not set {e}")
+            raise
+        
     async def replace_track_and_start(self, track) -> None:
         async with self._controller_lock:
             # 0) ensure robot is controllable / auto-mode on (optional but smart)
@@ -144,6 +155,16 @@ class NavigationManager:
             await asyncio.sleep(0.05)
         raise TimeoutError("wait condition not met")
 
+    async def start_following(self) -> None:
+        """Start following the currently set track."""
+        logger.info("Starting track following...")
+        try:
+            await self.controller_client.request_reply("/start", Empty())
+            logger.info("START: Track following")
+        except Exception as e:
+            logger.error(f"FAIL: track following not started: {e}")
+            raise
+        
     async def monitor_track_state(self) -> None:
         """Monitor the track_follower state and set events based on status."""
         logger.info("Starting track state monitoring...")
