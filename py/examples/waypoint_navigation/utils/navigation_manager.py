@@ -57,8 +57,8 @@ class NavigationManager:
         self.curr_segment_name: str = "start"
         self.no_stop = no_stop
         self.actuator = actuator or NullActuator()
-        self.vision_active: bool = False
-        self._controller_lock = asyncio.Lock()
+        self.vision_active = False
+        self._controller_lock = getattr(self, "_controller_lock", asyncio.Lock())
 
 
         # Actuator / CAN config
@@ -75,6 +75,27 @@ class NavigationManager:
                 "Actuator was enabled but no CAN bus client provided; disabling actuator pulses.")
             self.actuator_enabled = False
 
+    async def _cancel_following(self):
+        async with self._controller_lock:
+            try:
+                await self.controller_client.request_reply("/cancel", Empty())
+            except Exception:
+                # ok if already idle
+                pass
+
+    async def _set_track_locked(self, track):
+        req = TrackFollowRequest(track=track)
+        async with self._controller_lock:
+            await self.controller_client.request_reply("/set_track", req)
+
+    async def _start_following_locked(self):
+        async with self._controller_lock:
+            await self.controller_client.request_reply("/start", Empty())
+
+    async def _pause_following_locked(self):
+        async with self._controller_lock:
+            await self.controller_client.request_reply("/pause", Empty())
+        
     def record_robot_position(self, segment_name: str) -> None:
         """Record robot position before starting a track segment.
 
@@ -106,7 +127,11 @@ class NavigationManager:
         logger.info(
             f"Setting track with {len(track.waypoints)} waypoints...")
         try:
-            await self.controller_client.request_reply("/set_track", TrackFollowRequest(track=track))
+            # await self.controller_client.request_reply("/set_track", TrackFollowRequest(track=track))
+            if getattr(self, "vision_active", False):
+                # let vision finish its cancel→set→start
+                await asyncio.sleep(0.05)
+            await self._set_track_locked(track)
             logger.info("SUCCESS: Track set")
         except Exception as e:
             logger.error(f"FAIL: Track not set {e}")
@@ -121,7 +146,8 @@ class NavigationManager:
 
             # 1) cancel current (ignore errors if idle)
             try:
-                await self.controller_client.request_reply("/cancel", Empty())
+                # await self.controller_client.request_reply("/cancel", Empty())
+                await self._cancel_following()
             except Exception:
                 pass
 
@@ -140,10 +166,7 @@ class NavigationManager:
             await self._wait_until(lambda s: s.status == TrackFollowerState.TRACK_FOLLOWING, timeout=2.0)
 
     async def _get_follower_state(self) -> TrackFollowerState:
-        raw = await self.controller_client.request_reply("/get_state", Empty(), decode=False)
-        st = TrackFollowerState()
-        st.ParseFromString(raw)
-        return st
+        return await self.controller_client.request_reply("/get_state", Empty(), decode=True)
 
     async def _wait_until(self, pred, timeout: float):
         import time
@@ -159,7 +182,11 @@ class NavigationManager:
         """Start following the currently set track."""
         logger.info("Starting track following...")
         try:
-            await self.controller_client.request_reply("/start", Empty())
+            # await self.controller_client.request_reply("/start", Empty())
+            if getattr(self, "vision_active", False):
+                # let vision finish its cancel→set→start
+                await asyncio.sleep(0.05)
+            await self._start_following_locked()
             logger.info("START: Track following")
         except Exception as e:
             logger.error(f"FAIL: track following not started: {e}")

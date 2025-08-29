@@ -77,25 +77,57 @@ async def vision_goal_listener(motion_planner, controller_client, nav_manager, p
 
     # --- helpers ------------------------------------------------------------
     async def get_state() -> TrackFollowerState:
-        raw = await controller_client.request_reply("/get_state", Empty(), decode=False)
-        st = TrackFollowerState()
-        st.ParseFromString(raw)
+        return await controller_client.request_reply("/get_state", Empty(), decode=True)
+
+    def _is_terminal(st: TrackFollowerState) -> bool:
+        return st.status.track_status in (
+            TrackStatusEnum.TRACK_COMPLETE,
+            TrackStatusEnum.TRACK_ABORTED,
+            TrackStatusEnum.TRACK_FAILED,
+            TrackStatusEnum.TRACK_TIMEOUT,
+        )
+        
+    async def wait_until(pred, timeout: float, poll_s: float = 0.05):
+        """
+        Poll follower state until pred(state) is True, or timeout elapses.
+        Assumes get_state() returns a decoded TrackFollowerState (decode=True).
+        """
+        loop = asyncio.get_event_loop()
+        deadline = loop.time() + timeout
+
+        # initial sample
+        st = await get_state()  # TrackFollowerState
+        while not pred(st):
+            if loop.time() >= deadline:
+                raise TimeoutError("wait condition not met")
+
+            await asyncio.sleep(poll_s)
+
+            try:
+                st = await get_state()  # keep sampling
+                if st is None:
+                    # extremely defensive: treat as transient failure
+                    continue
+            except Exception as e:
+                # transient RPC/wire hiccup; keep trying until deadline
+                # (optionally log: print(f"[vision] get_state failed: {e}"))
+                continue
+
         return st
 
-    async def wait_until(pred, timeout: float, poll_s: float = 0.05) -> TrackFollowerState:
-        t0 = asyncio.get_event_loop().time()
-        st = await get_state()
-        while not pred(st):
-            if asyncio.get_event_loop().time() - t0 > timeout:
-                raise TimeoutError("wait condition not met")
-            await asyncio.sleep(poll_s)
-            st = await get_state()
-        return st
 
     # One mutex to rule all controller RPCs (prevents races with nav loop)
     if not hasattr(nav_manager, "_controller_lock"):
         nav_manager._controller_lock = asyncio.Lock()
     ctl_lock: asyncio.Lock = nav_manager._controller_lock
+
+    # Latch state on the nav_manager object so it’s visible across loops
+    if not hasattr(nav_manager, "vision_latched"):
+        nav_manager.vision_latched = False
+    if not hasattr(nav_manager, "vision_latch_deadline"):
+        nav_manager.vision_latch_deadline = 0.0
+
+    LATCH_MAX_S = 20.0  # safety timeout for a vision retarget (tune as you like)
 
     # --- socket setup -------------------------------------------------------
     loop = asyncio.get_running_loop()
@@ -114,7 +146,29 @@ async def vision_goal_listener(motion_planner, controller_client, nav_manager, p
 
     try:
         while True:
-            # ---- receive (blocking in thread) ----
+            # --- while latched, just watch state and drop messages ---
+            if nav_manager.vision_latched:
+                # auto-unlatch on terminal state or timeout
+                try:
+                    st = await get_state()
+                    if _is_terminal(st) or (asyncio.get_event_loop().time() >= nav_manager.vision_latch_deadline):
+                        nav_manager.vision_latched = False
+                        # small grace to avoid immediate re-trigger on the same frame
+                        await asyncio.sleep(0.2)
+                except Exception:
+                    # if state read hiccups, keep latch until deadline
+                    pass
+
+                # drain/ignore incoming UDP quickly, then continue loop
+                try:
+                    _ = await asyncio.wait_for(
+                        asyncio.get_running_loop().run_in_executor(None, sock.recvfrom, 4096), timeout=0.01
+                    )
+                except Exception:
+                    await asyncio.sleep(0.03)
+                continue
+
+            # ---- receive next message (non-latched path) ----
             try:
                 data, _ = await loop.run_in_executor(None, sock.recvfrom, 4096)
             except socket.timeout:
@@ -167,7 +221,7 @@ async def vision_goal_listener(motion_planner, controller_client, nav_manager, p
             # follower status (for FOLLOWING_OK gate)
             try:
                 st = await get_state()
-                is_following = (st.status == TrackStatusEnum.TRACK_FOLLOWING)
+                is_following = (st.status.track_status == TrackStatusEnum.TRACK_FOLLOWING)
             except Exception:
                 is_following = False
             FOLLOWING_OK = (is_following and CONE_OK)
@@ -206,74 +260,56 @@ async def vision_goal_listener(motion_planner, controller_client, nav_manager, p
 
             try:
                 async with ctl_lock:
-                    # A) if auto mode is disabled / not controllable -> /pause and skip this cycle
                     st = await get_state()
-                    if not st.robot_status.controllable:
-                        try:
-                            await controller_client.request_reply("/pause", Empty())
-                            print("[vision] paused follower (auto mode disabled / not controllable)")
-                        except Exception as e:
-                            print(f"[vision] pause failed: {e}")
-                        # don't attempt to drive; wait for next message when operator re-enables auto
+
+                    # Only pause if not controllable AND currently following
+                    if not st.status.robot_status.controllable:
+                        if st.status.track_status == TrackStatusEnum.TRACK_FOLLOWING:
+                            try:
+                                await controller_client.request_reply("/pause", Empty())
+                                print("[vision] paused follower (auto mode disabled / not controllable)")
+                            except Exception as e:
+                                print(f"[vision] pause failed: {e}")
+                        # Skip this cycle entirely; don't set a new track while not controllable
                         continue
 
-                    # B) cancel current (ignore errors if idle)
+                    # cancel current (ignore errors if idle)
                     try:
                         await controller_client.request_reply("/cancel", Empty())
                     except Exception:
                         pass
 
-                    # C) wait until NOT FOLLOWING to avoid “already following” on /start
+                    # wait until NOT FOLLOWING to avoid “already following” error on /start
                     try:
-                        await wait_until(lambda s: s.status != TrackStatusEnum.TRACK_FOLLOWING, timeout=3.0)
+                        await wait_until(lambda s: s.status.track_status != TrackStatusEnum.TRACK_FOLLOWING, timeout=3.0)
                     except TimeoutError:
                         print("[vision] warn: still FOLLOWING after cancel; proceeding anyway")
 
-                    # D) /set_track (proto, not bytes)
+                    # set → wait LOADED → start → wait FOLLOWING
                     req = TrackFollowRequest(track=track)
                     await controller_client.request_reply("/set_track", req)
-
-                    # E) wait until LOADED, then /start
-                    await wait_until(lambda s: s.status == TrackStatusEnum.TRACK_LOADED, timeout=2.0)
+                    await wait_until(lambda s: s.status.track_status == TrackStatusEnum.TRACK_LOADED, timeout=2.0)
                     await controller_client.request_reply("/start", Empty())
-
-                    # F) confirm FOLLOWING
-                    await wait_until(lambda s: s.status == TrackStatusEnum.TRACK_FOLLOWING, timeout=2.0)
+                    await wait_until(lambda s: s.status.track_status == TrackStatusEnum.TRACK_FOLLOWING, timeout=2.0)
 
                     print("[vision] start sent; goal world = (%.2f, %.2f)" %
                           (goal.a_from_b.translation[0], goal.a_from_b.translation[1]))
 
-                # G) poll until terminal state or short timeout (non-blocking of other tasks)
+                    # LATCH NOW: ignore further cone messages until terminal or timeout
+                    nav_manager.vision_latched = True
+                    nav_manager.vision_latch_deadline = asyncio.get_event_loop().time() + LATCH_MAX_S
+
+                # optional: light polling (purely for console feedback)
                 t0 = asyncio.get_event_loop().time()
-                while True:
+                while asyncio.get_event_loop().time() - t0 < 4.0:
                     try:
                         st = await get_state()
-                        print(f"[vision] follower status: {TrackStatusEnum.Name(st.status)}")
-                        if st.status in (
-                            TrackStatusEnum.TRACK_COMPLETE,
-                            TrackStatusEnum.TRACK_ABORTED,
-                            TrackStatusEnum.TRACK_FAILED,
-                            TrackStatusEnum.TRACK_TIMEOUT,
-                        ):
-                            break
-                        # If auto mode drops mid-run, pause immediately
-                        if not st.robot_status.controllable:
-                            try:
-                                await controller_client.request_reply("/pause", Empty())
-                                print("[vision] paused follower mid-run (auto mode disabled)")
-                            except Exception as e:
-                                print(f"[vision] pause mid-run failed: {e}")
+                        print(f"[vision] follower status: {TrackStatusEnum.Name(st.status.track_status)}")
+                        if _is_terminal(st):
                             break
                     except Exception:
                         pass
-                    if asyncio.get_event_loop().time() - t0 > 12.0:
-                        print("[vision] gave up waiting on vision track completion")
-                        break
-                    await asyncio.sleep(0.2)
-
-                # remember for debounce
-                last_goal = (x, y)
-                last_sent_t = asyncio.get_event_loop().time()
+                    await asyncio.sleep(0.25)
 
             finally:
                 if hasattr(nav_manager, "vision_active"):

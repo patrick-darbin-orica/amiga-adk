@@ -26,7 +26,7 @@ RGB_VFOV_DEG    = 72     # vertical FOV used in projector/overlays
 STEREO_HFOV_DEG = 127    # keep if you ever switch to stereo FOV overlays
 
 # ---- Fixed camera tilt & height (no IMU) ----
-CAM_HEIGHT_M = 0.865
+CAM_HEIGHT_M = 0.880
 TILT_DEG     = 30.0      # +30° pitch DOWN
 theta = math.radians(TILT_DEG)
 

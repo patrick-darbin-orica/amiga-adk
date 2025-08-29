@@ -78,14 +78,21 @@ def _poses_from_csv(csv_path: Path) -> dict[int, Pose3F64]:
                             frame_b="hole", tangent_of_b_in_a=zero_tangent)
     return poses
 
-def offset_towards(start_xy, target_xy, offset_m):
+def _offset_towards(start_xy, target_xy, offset_m):
+    """
+    Returns a point lying on the segment [start -> target] but 'offset_m' short of 'target'.
+    If dist(start, target) <= offset_m, returns 'start' (i.e., don't move past/through the target).
+    """
     sx, sy = start_xy
     tx, ty = target_xy
     dx, dy = tx - sx, ty - sy
     dist = hypot(dx, dy)
-    if dist <= 1e-6 or offset_m <= 0:
-        return (tx, ty)
-    scale = max((dist - offset_m) / dist, 0.0)
+    if dist <= 1e-6:
+        return (sx, sy)
+    # If we are closer than the offset already, just stay put.
+    if dist <= offset_m:
+        return (sx, sy)
+    scale = (dist - offset_m) / dist
     return (sx + dx * scale, sy + dy * scale)
 
 class FirstManeuver(Enum):
@@ -364,7 +371,7 @@ class MotionPlanner:
 
         # keep heading same (bearing‑agnostic arrival)
         goal = Pose3F64(Isometry3F64(goal_t, Rotation3F64.Rz(yaw)), frame_a="world", frame_b="vision_goal")
-
+        
         tb = TrackBuilder(start=current_pose)
         tb.create_ab_segment(next_frame_b="vision_goal", final_pose=goal, spacing=spacing)  # 
         return tb.track, goal
