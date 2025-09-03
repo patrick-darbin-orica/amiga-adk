@@ -148,7 +148,7 @@ class CanHBridgeActuator(BaseActuator):
         t_end = time.monotonic() + seconds
         name = HBridgeCommandType.Name(command) if hasattr(
             HBridgeCommandType, "Name") else str(command)
-        logger.info("🔧 Actuator %d: %s for %.2fs @ %.1f Hz",
+        logger.info("Actuator %d: %s for %.2fs @ %.1f Hz",
                     self.actuator_id, name, seconds, rate_hz)
         try:
             while time.monotonic() < t_end:
@@ -171,7 +171,7 @@ class CanHBridgeActuator(BaseActuator):
     async def stop(self) -> None:
         if self.client is None:
             return
-        logger.info("🔧 Actuator %d: STOP", self.actuator_id)
+        logger.info("Actuator %d: STOP", self.actuator_id)
         await self.client.request_reply(
             "/control_tools",
             _build_hbridge_cmd(
