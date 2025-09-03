@@ -339,7 +339,7 @@ async def main(args) -> None:
         logger.info("Initializing motion planner...")
         motion_planner = MotionPlanner(
             client=filter_client,
-            tool_config_path=args.tool_config_path,
+            tool_config_path=args.tool_config_path, # offset of centre of robot to dipper
             # camera_offset_path=args.camera_offset_path,
             waypoints_path=args.waypoints_path,
             last_row_waypoint_index=args.last_row_waypoint_index,

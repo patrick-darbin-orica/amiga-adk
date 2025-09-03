@@ -192,16 +192,14 @@ class MotionPlanner:
         translation = offset_data["translation"]
 
         # Define tool_from_robot instead of robot_from_tool
-        tool_from_robot = Pose3F64(
+        robot_from_tool = Pose3F64(
             a_from_b=Isometry3F64(
-                translation=[translation["x"], translation["y"], translation["z"]],
-                rotation=Rotation3F64()
+                translation=[translation["x"], translation["y"], translation["z"]], rotation=Rotation3F64()
             ),
-            frame_a="tool",
-            frame_b="robot",
+            frame_a="robot",
+            frame_b="tool",
         )
-        return tool_from_robot
-
+        return robot_from_tool
 
     def _transform_holes_to_robot_poses(self, hole_poses: Dict[int, Pose3F64]) -> Dict[int, Pose3F64]:
         """Transform hole coordinates to robot center coordinates."""
