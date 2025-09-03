@@ -47,6 +47,7 @@ class WaypointCollector:
             if not message.has_converged:
                 self.current_pose = None
                 print(f"Filter diverged due to: {divergence_criteria}")
+                print()
 
             else:
                 self.current_pose = pose

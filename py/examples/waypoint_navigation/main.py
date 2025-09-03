@@ -173,7 +173,7 @@ if __name__ == "__main__":
     )
     # Required
     parser.add_argument("--waypoints-path", type=Path, required=True,
-                        help="Path to waypoints JSON file (Track format)")
+                        help="Path to waypoints JSON or CSV file (Track format)")
     parser.add_argument("--tool-config-path", type=Path,
                         required=True, help="Path to tool configuration JSON file")
     parser.add_argument(
