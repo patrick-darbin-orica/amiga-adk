@@ -1,0 +1,5 @@
+{
+  "name": "canbus",
+  "port": 6001,
+  "host": "fox-furrow"
+}

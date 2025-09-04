@@ -137,3 +137,11 @@ dmypy.json
 # farm-ng log files
 *.bin
 *.mcap
+
+# Ignore generated visualization outputs
+py/examples/waypoint_navigation/visualization/navigation_progress.json
+py/examples/waypoint_navigation/visualization/robot_positions.json
+
+# Ignore generated csv and json tracks
+py/examples/waypoint_navigation/surveyed-waypoints/*.csv
+py/examples/waypoint_navigation/surveyed-waypoints/*.json

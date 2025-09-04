@@ -1,0 +1,41 @@
+{
+    // Use IntelliSense to learn about possible attributes.
+    // Hover to view descriptions of existing attributes.
+    // For more information, visit: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Waypoint Nav Debug",
+            "type": "debugpy",
+            "justMyCode": true,
+            "request": "launch",
+            "program": "/mnt/managed_home/farm-ng-user-patrick-orica/farm-ng-amiga/py/examples/waypoint_navigation/main.py",
+            "console": "integratedTerminal",
+            "stopOnEntry": true,
+            "cwd": "/mnt/managed_home/farm-ng-user-patrick-orica/farm-ng-amiga/py/examples/waypoint_navigation",
+            "args": [
+                "--config",
+                "./configs/config.json",
+                "--tool-config-path",
+                "./configs/tool_config.json",
+                "--waypoints-path",
+                "./surveyed-waypoints/test1.csv",
+                "--last-row-waypoint-index",
+                "4",
+                "--turn-direction",
+                "left",
+                "--row-spacing",
+                "6.0",
+                "--headland-buffer",
+                "6.0",
+                "--actuator-enabled",
+                "--actuator-id",
+                "0",
+                "--actuator-open-seconds",
+                "6",
+                "--actuator-close-seconds",
+                "7",
+            ],
+        }
+    ]
+}

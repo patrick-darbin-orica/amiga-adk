@@ -1,0 +1,186 @@
+{
+  "waypoints": [
+    {
+      "aFromB": {
+        "rotation": {
+          "unitQuaternion": {
+            "imag": {
+              "z": -0.2048462747947118
+            },
+            "real": 0.9787941579835514
+          }
+        },
+        "translation": {
+          "x": 11119.39268097416,
+          "y": 8423.160593463017
+        }
+      },
+      "frameA": "world",
+      "frameB": "robot",
+      "tangentOfBInA": {
+        "linearVelocity": {
+          "x": 0.00055674897105286
+        },
+        "angularVelocity": {
+          "z": 0.0023191577470494332
+        }
+      }
+    },
+    {
+      "aFromB": {
+        "rotation": {
+          "unitQuaternion": {
+            "imag": {
+              "z": -0.17846214362584176
+            },
+            "real": 0.9839467786890048
+          }
+        },
+        "translation": {
+          "x": 11119.628922028232,
+          "y": 8423.021022261346
+        }
+      },
+      "frameA": "world",
+      "frameB": "robot",
+      "tangentOfBInA": {
+        "linearVelocity": {
+          "x": -0.0008996783470770195
+        },
+        "angularVelocity": {
+          "z": 0.005036429868128129
+        }
+      }
+    },
+    {
+      "aFromB": {
+        "rotation": {
+          "unitQuaternion": {
+            "imag": {
+              "z": -0.20572861456677075
+            },
+            "real": 0.9786090829071826
+          }
+        },
+        "translation": {
+          "x": 11120.555199816954,
+          "y": 8422.554005432916
+        }
+      },
+      "frameA": "world",
+      "frameB": "robot",
+      "tangentOfBInA": {
+        "linearVelocity": {
+          "x": -0.004462540117986305
+        },
+        "angularVelocity": {
+          "z": -0.003231085489959984
+        }
+      }
+    },
+    {
+      "aFromB": {
+        "rotation": {
+          "unitQuaternion": {
+            "imag": {
+              "z": -0.2065999996743514
+            },
+            "real": 0.9784254903336064
+          }
+        },
+        "translation": {
+          "x": 11120.553838546333,
+          "y": 8422.556111005593
+        }
+      },
+      "frameA": "world",
+      "frameB": "robot",
+      "tangentOfBInA": {
+        "linearVelocity": {
+          "x": 0.008387208189484486
+        },
+        "angularVelocity": {
+          "z": -0.002408104082851267
+        }
+      }
+    },
+    {
+      "aFromB": {
+        "rotation": {
+          "unitQuaternion": {
+            "imag": {
+              "z": -0.2065999996743514
+            },
+            "real": 0.9784254903336064
+          }
+        },
+        "translation": {
+          "x": 11120.553838546333,
+          "y": 8422.556111005593
+        }
+      },
+      "frameA": "world",
+      "frameB": "robot",
+      "tangentOfBInA": {
+        "linearVelocity": {
+          "x": 0.008387208189484486
+        },
+        "angularVelocity": {
+          "z": -0.002408104082851267
+        }
+      }
+    },
+    {
+      "aFromB": {
+        "rotation": {
+          "unitQuaternion": {
+            "imag": {
+              "z": -0.82617391097216
+            },
+            "real": 0.5634151833496905
+          }
+        },
+        "translation": {
+          "x": 11118.202884236878,
+          "y": 8427.357300641284
+        }
+      },
+      "frameA": "world",
+      "frameB": "robot",
+      "tangentOfBInA": {
+        "linearVelocity": {
+          "x": 0.004257673832685698
+        },
+        "angularVelocity": {
+          "z": 0.003354248270693667
+        }
+      }
+    },
+    {
+      "aFromB": {
+        "rotation": {
+          "unitQuaternion": {
+            "imag": {
+              "z": -0.826751175684242
+            },
+            "real": 0.5625677679219844
+          }
+        },
+        "translation": {
+          "x": 11118.210577705953,
+          "y": 8427.35580551892
+        }
+      },
+      "frameA": "world",
+      "frameB": "robot",
+      "tangentOfBInA": {
+        "linearVelocity": {
+          "x": -0.007538418234799435
+        },
+        "angularVelocity": {
+          "z": -0.0032210519805090116
+        }
+      }
+    }
+  ]
+}

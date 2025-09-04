@@ -16,19 +16,20 @@
 
 syntax = "proto3";
 
-
 import "farm_ng/core/lie.proto";
 import "farm_ng/core/pose.proto";
 
 package farm_ng.track.proto;
 
-// A track is a sequence of waypoints that the robot should follow or already drove.
+// A track is a sequence of waypoints that the robot should follow or already
+// drove.
 message Track {
   // The waypoints along the track
   repeated farm_ng.core.proto.Pose waypoints = 1;
 }
 
-// This is sent to the track_follower service by a client to request a track be followed.
+// This is sent to the track_follower service by a client to request a track be
+// followed.
 message TrackFollowRequest {
   // The track to follow
   Track track = 1;
@@ -71,7 +72,8 @@ enum DrivingDirection {
   DIRECTION_REVERSE = 2;
 }
 
-// Enum representing the order in which the waypoints along the track are traversed.
+// Enum representing the order in which the waypoints along the track are
+// traversed.
 enum WaypointOrder {
   // Waypoint order is unknown
   ORDER_UNSPECIFIED = 0;
@@ -81,7 +83,8 @@ enum WaypointOrder {
   ORDER_REVERSED = 2;
 }
 
-// Enum representing the status of the track from the track follower's perspective
+// Enum representing the status of the track from the track follower's
+// perspective
 enum TrackStatusEnum {
   // Track status is unknown
   TRACK_UNSPECIFIED = 0;
@@ -133,12 +136,12 @@ message TrackFollowerProgress {
   // The number of waypoints along the track
   int32 track_size = 1;
   // The index of the waypoint along the track being used as the control target.
-  // The index order is reversed if the robot is driving the track in reverse order.
-  // See: WaypointOrder
+  // The index order is reversed if the robot is driving the track in reverse
+  // order. See: WaypointOrder
   int32 goal_waypoint_index = 2;
   // The index of the waypoint along the track the robot is closest to.
-  // The index order is reversed if the robot is driving the track in reverse order.
-  // See: WaypointOrder
+  // The index order is reversed if the robot is driving the track in reverse
+  // order. See: WaypointOrder
   int32 closest_waypoint_index = 3;
 
   /* Distance components */
@@ -158,6 +161,21 @@ message TrackFollowerProgress {
   // This is based on the anticipated velocity of the control commands,
   // as determined by track_follower parameters (e.g., max speed)
   double duration_remaining = 7;
+  // Cross track error
+  CrossTrackError cross_track_error = 8;
+}
+
+// Cross track error measurements relative to the track
+message CrossTrackError {
+  // The lateral distance (y-axis) from the robot to the track
+  double lateral_distance = 1;
+  // The longitudinal distance (x-axis) from the robot to the track
+  double longitudinal_distance = 2;
+  // The total distance from the robot to the track
+  // This is the Euclidean distance in the x-y plane
+  double total_distance = 3;
+  // The heading error (z-axis) from the robot to the track
+  double heading_error = 4;
 }
 
 // Poses of the robot and relevant points along the track

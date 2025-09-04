@@ -1,0 +1,30 @@
+{
+  "waypoints": [
+    {
+      "aFromB": {
+        "rotation": {
+          "unitQuaternion": {
+            "imag": {
+              "z": -0.9517382899578454
+            },
+            "real": 0.30691078089261703
+          }
+        },
+        "translation": {
+          "x": 11117.775897942194,
+          "y": 8429.909441847642
+        }
+      },
+      "frameA": "world",
+      "frameB": "robot",
+      "tangentOfBInA": {
+        "linearVelocity": {
+          "x": 3.0154809384164864e-06
+        },
+        "angularVelocity": {
+          "z": 0.004246437252090956
+        }
+      }
+    }
+  ]
+}
