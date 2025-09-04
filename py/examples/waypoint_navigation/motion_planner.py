@@ -259,7 +259,7 @@ class MotionPlanner:
 
     async def create_tool_to_origin_segment(self) -> Track:
         """Micro-move: plumbob→chute/origin. Here we only need +0.22 m forward."""
-        advance_m = 0.22  # your measured value
+        advance_m = 0.30  # your measured value
         current = await self._get_current_pose()
         track_builder = TrackBuilder(start=current)
         track_builder.create_straight_segment(next_frame_b="tool_to_origin", distance=advance_m, spacing=0.05)

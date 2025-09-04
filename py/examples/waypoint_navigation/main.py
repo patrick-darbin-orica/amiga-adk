@@ -41,7 +41,7 @@ from utils.actuator import BaseActuator, NullActuator, CanHBridgeActuator
 from farm_ng_core_pybind import Pose3F64
 from google.protobuf.empty_pb2 import Empty
 from motion_planner import MotionPlanner
-from utils.canbus import move_robot_forward
+# from utils.canbus import move_robot_forward
 from utils.navigation_manager import NavigationManager
 from utils.multiclient import MultiClientSubscriber as multi
 

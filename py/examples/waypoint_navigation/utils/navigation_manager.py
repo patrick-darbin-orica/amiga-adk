@@ -15,7 +15,7 @@ from farm_ng.track.track_pb2 import (
 )
 from google.protobuf.empty_pb2 import Empty
 from utils.actuator import BaseActuator, NullActuator
-from utils.canbus import move_robot_forward, trigger_dipbob
+from utils.canbus import trigger_dipbob
 
 logger = logging.getLogger(__name__)
 
@@ -39,8 +39,8 @@ class NavigationManager:
         canbus_client: Optional[EventClient] = None,
         actuator_enabled: bool = True,  # TODO: Remove
         actuator_id: int = 0,
-        actuator_open_seconds: float = 0.2,#6.5, 
-        actuator_close_seconds: float = 0.3,#7,
+        actuator_open_seconds: float = 6.5,#6.5, 
+        actuator_close_seconds: float = 7,#7,
         actuator_rate_hz: float = 10.0,
     ):
         self.filter_client = filter_client
@@ -298,6 +298,8 @@ class NavigationManager:
 
         try:
             await self.motion_planner._shutdown()
+            logger.info("Cancel track follower")
+            await self._cancel_following()
         except Exception as e:
             logger.error(f"ERROR when shutting down motion planner: {e}")
 
@@ -490,7 +492,7 @@ class NavigationManager:
                         f"Failed to execute segment {segment_count}. Stopping navigation.")
                     failed_attempts += 1
                     if segment_count == 1 and failed_attempts > 5:
-                        await move_robot_forward(time_goal=1.5)
+                        # await move_robot_forward(time_goal=1.5)
                         logger.info(
                             f"Moving robot forward | Failed attempts: {failed_attempts}")
                         failed_attempts = 0
