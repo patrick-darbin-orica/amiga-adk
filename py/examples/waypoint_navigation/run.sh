@@ -3,7 +3,7 @@ source ~/farm-ng-amiga/venv/bin/activate
 python main.py \
  --config ./configs/config.json \
  --tool-config-path ./configs/tool_config.json \
- --waypoints-path ./surveyed-waypoints/waypointTest2.csv \
+ --waypoints-path ./surveyed-waypoints/waypointTest1.csv \
  --last-row-waypoint-index 4 \
  --turn-direction left \
  --row-spacing 6.0 \

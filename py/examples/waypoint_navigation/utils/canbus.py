@@ -11,60 +11,44 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
+
 from __future__ import annotations
-
 import asyncio
-import time
-import shutil
 from pathlib import Path
-import can
+import argparse
 
-from farm_ng.canbus.canbus_pb2 import Twist2d, RawCanbusMessage
+from farm_ng.canbus.canbus_pb2 import RawCanbusMessage
 from farm_ng.core.event_client import EventClient
 from farm_ng.core.event_service_pb2 import EventServiceConfig
 from farm_ng.core.events_file_reader import proto_from_json_file
 
 
-# async def move_robot_forward(time_goal: float = 1.5) -> None:
-#     """Util function to move the robot forward in case it gets stuck.
+CAN_EFF_FLAG = 0x80000000       # SocketCAN "extended frame" flag
+CAN_EFF_MASK = 0x1FFFFFFF       # 29-bit ID mask
 
-#     Args:
-#         service_config_path (Path): The path to the canbus service config.
-#     """
-#     # Initialize the command to send
-#     twist = Twist2d(linear_velocity_x=0.7)
+def eff_id(arb29: int) -> int:
+    if arb29 & ~CAN_EFF_MASK:
+        raise ValueError(f"ID {arb29:#x} exceeds 29 bits")
+    return CAN_EFF_FLAG | arb29
 
-#     # create a client to the canbus service
-#     service_config_path = Path("./configs/canbus_config.json")
-#     config: EventServiceConfig = proto_from_json_file(
-#         service_config_path, EventServiceConfig())
-#     client: EventClient = EventClient(config)
-#     start = time.monotonic()
-#     # Hold the loop for the duration
-#     while time.monotonic() - start < time_goal:
-#         # Update and send the twist command
-#         print(
-#             f"Sending linear velocity: {twist.linear_velocity_x:.3f}, angular velocity: {twist.angular_velocity:.3f}")
-#         await client.request_reply("/twist", twist)
+async def _send_once_farmng(client, arb29: int, payload: bytes) -> None:
+    msg = RawCanbusMessage()
+    msg.id = eff_id(arb29)               # <-- set extended flag here
+    msg.remote_transmission = False      # RTR=0 (data frame)
+    msg.error = False
+    msg.data = payload                   # 8 bytes
+    await client.request_reply("/can_message", msg, decode=True)
 
-#         # Sleep to maintain a constant rate
-#         await asyncio.sleep(0.1)
+async def trigger_dipbob(service_config_path: str = "can0") -> None:
+    # If the argument isn't a JSON path, fall back to your default config
+    cfg_path = Path(service_config_path)
+    if cfg_path.suffix.lower() != ".json":
+        cfg_path = Path("./configs/canbus_config.json")  # <— your real canbus service config
 
+    cfg: EventServiceConfig = proto_from_json_file(cfg_path, EventServiceConfig())
+    client = EventClient(cfg)
 
-def _send_once_socketcan(bus: can.Bus, data: bytes) -> None:
-    msg = can.Message(
-        arbitration_id=0x18FF0007,
-        data=data,
-        is_extended_id=True,  # 0x18FF0007 is 29-bit
-    )
-    bus.send(msg, timeout=0.1)
-
-async def trigger_dipbob(iface: str = "can0") -> None:
-    # open/close per call to keep it simple; you can hold the bus persistently elsewhere
-    bus = can.interface.Bus(channel=iface, bustype="socketcan")
-    try:
-        _send_once_socketcan(bus, bytes([0x06, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00]))
-        await asyncio.sleep(0.02)
-        _send_once_socketcan(bus, bytes([0x07, 0x00, 0x02, 0x00, 0x00, 0x00, 0x00, 0x00]))
-    finally:
-        bus.shutdown()
+    await _send_once_farmng(client, 0x18FF0007, b"\x06\x00\x02\x00\x00\x00\x00\x00")
+    await asyncio.sleep(0.02)
+    await _send_once_farmng(client, 0x18FF0007, b"\x07\x00\x02\x00\x00\x00\x00\x00")
