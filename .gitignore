@@ -138,6 +138,6 @@ dmypy.json
 *.bin
 *.mcap
 
-# Ignore generated navigation output
-visualization/navigation_progress.json
-visualization/robot_positions.json
+# Ignore generated visualization outputs
+py/examples/waypoint_navigation/visualization/navigation_progress.json
+py/examples/waypoint_navigation/visualization/robot_positions.json
