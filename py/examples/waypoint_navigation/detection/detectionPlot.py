@@ -14,13 +14,16 @@ import os
 from farm_ng_core_pybind import Isometry3F64
 from farm_ng_core_pybind import Pose3F64
 from farm_ng_core_pybind import Rotation3F64
+from YOLO import YoloSpatialDetectionNetwork
 
 sys.path.append(str(Path(__file__).resolve().parents[1]))
 from utils.pose_cache import get_latest_pose, set_latest_pose
 
 
 # ---------------- Model / rates ----------------
-modelDescription = dai.NNModelDescription("luxonis/ppe-detection:640x640")
+# modelDescription = dai.NNModelDescription("luxonis/ppe-detection:640x640")
+modelDescription = dai.NNModelDescription("yolov8nCones.blob")
+
 FPS = 15
 
 # ---------------- Camera / FOV ----------------
@@ -489,7 +492,15 @@ camRgb  = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_A)
 monoL   = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_B)
 monoR   = pipeline.create(dai.node.Camera).build(dai.CameraBoardSocket.CAM_C)
 stereo  = pipeline.create(dai.node.StereoDepth)
-sdn     = pipeline.create(dai.node.SpatialDetectionNetwork).build(camRgb, stereo, modelDescription, fps=FPS)
+sdn     = pipeline.create(dai.node.YoloSpatialDetectionNetwork)
+sdn.setBlobPath("/mnt/managed_home/farm-ng-user-patrick-orica/farm-ng-amiga/py/examples/waypoint_navigation/detection/yolov8nCones.blob")
+
+sdn.setConfidenceThreshold(0.5)
+sdn.input.setBlocking(False)
+
+# typical links (adjust to your graph):
+camRgb.preview.link(sdn.input)
+stereo.depth.link(sdn.inputDepth)
 
 # Stereo & NN config
 stereo.setExtendedDisparity(True)
