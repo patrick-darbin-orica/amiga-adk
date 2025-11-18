@@ -91,11 +91,14 @@
                 </div>
             </div>
 
-            <!-- Column 1 Row 2: Camera Feed 2 (Placeholder) -->
+            <!-- Column 1 Row 2: Camera Feed 2 (oak0) -->
             <div class="panel camera-panel">
-                <h2>Camera Feed 2</h2>
-                <div class="video-container" style="display: flex; align-items: center; justify-content: center; color: #666;">
-                    <span>Not Connected</span>
+                <h2>Camera Feed 2 (oak0)</h2>
+                <div class="video-container">
+                    <img id="camera-feed-2" src="{{ url_for('video_feed_2') }}" alt="oak0 Camera Feed">
+                    <div id="camera-overlay-2">
+                        <div class="camera-info">Waiting for oak0 camera...</div>
+                    </div>
                 </div>
             </div>
 
