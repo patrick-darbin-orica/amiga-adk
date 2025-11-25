@@ -6,7 +6,7 @@ import depthai as dai
 import numpy as np
 
 # Check if headless mode is enabled (for Flask integration) - MUST be before matplotlib imports
-HEADLESS_MODE = os.getenv('DETECTION_HEADLESS', '0') == '0'
+HEADLESS_MODE = os.getenv('DETECTION_HEADLESS', '0') == '1'
 
 import matplotlib
 if HEADLESS_MODE:
@@ -45,12 +45,13 @@ from imu_tilt_compensation import IMUTiltCompensation
 # MODEL_PATH = Path(__file__).parent / "collarDetectionV2.engine"
 # MODEL_PATH = Path(__file__).parent / "White_Barrel.onnx"
 # MODEL_PATH = Path(__file__).parent / "yoloe-11s-seg-pf.pt"
-MODEL_PATH = Path(__file__).parent / "yoloe-11s-seg.engine"
+# MODEL_PATH = Path(__file__).parent / "yoloe-11s-seg.engine"
+MODEL_PATH = Path(__file__).parent / "best.pt"
 CONF_THRESHOLD = 0.3
 IOU_THRESHOLD = 0.5
 IMG_SIZE = 640
 
-FPS = 30
+FPS = 10  # Reduced from 15 to further limit CPU usage
 
 # ---------------- Camera / FOV ----------------
 USE_RGB_FOV     = True
@@ -104,6 +105,7 @@ WAYPOINT_Z_M =  2.32
 
 # OPTIONAL: lock to a specific device (MxID or name). Leave as "" to use default device.
 TARGET_DEVICE  = "14442C1001A528D700"  # or ""
+# TARGET_DEVICE = "184430100194630E00"
 
 # Depth filtering
 DEPTH_LOWER_MM = 100
@@ -965,8 +967,24 @@ with pipeline:
     frame_count = 0
     fps_start_time = time.time()
 
+    # Rate limiting to reduce CPU load
+    target_process_fps = FPS  # Use FPS constant from top of file
+    min_frame_interval = 1.0 / target_process_fps
+    last_process_time = time.time()
+
     try:
         while pipeline.isRunning():
+            # Rate limiting: Skip processing if we're going too fast
+            current_time = time.time()
+            time_since_last_process = current_time - last_process_time
+
+            if time_since_last_process < min_frame_interval:
+                # Sleep briefly to avoid busy-waiting and yield CPU to other processes
+                time.sleep(0.001)  # 1ms sleep to prevent tight loop
+                continue
+
+            last_process_time = current_time
+
             # Update IMU data (tilt compensation)
             imuData = drain_latest(qImu)
             if imuData is not None:
@@ -1077,12 +1095,14 @@ with pipeline:
                     'distance': float(np.linalg.norm(v_r))
                 })
 
-            # Write to shared file for Flask
-            try:
-                with open('/tmp/amiga_detections.json', 'w') as f:
-                    json.dump(detection_data, f)
-            except Exception:
-                pass
+            # Write to shared file for Flask (throttled to reduce I/O load)
+            # Only write every 15 frames (1 Hz at 15 FPS) to reduce disk I/O
+            if frame_count % 15 == 0:
+                try:
+                    with open('/tmp/amiga_detections.json', 'w') as f:
+                        json.dump(detection_data, f)
+                except Exception:
+                    pass
 
             # ALWAYS emit closest detection (regardless of headless mode)
             # Find closest detection and send UDP message

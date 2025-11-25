@@ -538,7 +538,7 @@ class NavigationManager:
                     # 2) Deploy plumbob (tool already over hole)
                     await trigger_dipbob("can0")
                     # logger.info("Deploying dipbob")
-                    await asyncio.sleep(3.0)  # TODO: swap for measurement await
+                    await asyncio.sleep(7.0)  # TODO: swap for measurement await
 
                     # 3) Move forward so robot origin is over the hole
                     origin_track = await self.motion_planner.create_tool_to_origin_segment()

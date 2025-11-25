@@ -11,10 +11,10 @@ LOG_FILE="logs/navigation_$(date +%Y%m%d_%H%M%S).log"
 python main.py \
  --config ./configs/config.json \
  --tool-config-path ./configs/tool_config.json \
- --waypoints-path ./surveyed-waypoints/physicsLabBack2Lanes.csv \
+ --waypoints-path ./surveyed-waypoints/deerPark3x2.csv \
  --last-row-waypoint-index 3 \
  --turn-direction left \
- --row-spacing 2.6 \
+ --row-spacing 6 \
  --headland-buffer 3.0 \
  --actuator-enabled --actuator-id 0 --actuator-rate-hz 5.0 2>&1 | tee "$LOG_FILE"
 
