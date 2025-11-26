@@ -22,12 +22,15 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from utils.pose_cache import get_latest_pose, set_latest_pose
 from utils.navigation_state import get_navigation_state, get_waypoint_status
 from utils.camera_frame_cache import get_latest_frame_bytes
+from utils.oak0_camera_cache import get_oak0_frame_bytes, set_oak0_frame
 
 # Import filter client dependencies
 from farm_ng.core.event_client import EventClient
 from farm_ng.core.event_service_pb2 import EventServiceConfig
 from farm_ng.core.events_file_reader import proto_from_json_file
 from farm_ng_core_pybind import Pose3F64
+import cv2
+import numpy as np
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'your-secret-key-here'
@@ -79,6 +82,25 @@ def video_feed():
                 except Exception as e:
                     print(f"Error streaming frame: {e}")
             time.sleep(1/15)  # 15 FPS max (matches detectionPlot FPS)
+
+    return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
+
+@app.route('/video_feed_2')
+def video_feed_2():
+    """
+    Stream oak0 camera feed (farm-ng camera service).
+    Reads the latest frame from oak0 camera via shared camera frame file.
+    """
+    def generate():
+        while True:
+            frame_bytes = get_oak0_frame_bytes()
+            if frame_bytes is not None:
+                try:
+                    yield (b'--frame\r\n'
+                           b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
+                except Exception as e:
+                    print(f"Error streaming oak0 frame: {e}")
+            time.sleep(1/15)  # 15 FPS to match oak1 camera and reduce latency
 
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
@@ -165,6 +187,45 @@ def robot_status():
         }
 
     return jsonify(status)
+
+@app.route('/camera_diagnostics')
+def camera_diagnostics():
+    """Get camera feed diagnostics and gRPC health status"""
+    diagnostics = {
+        'oak1_feed': {
+            'source': 'detectionPlot.py (DepthAI)',
+            'cache_file': '/tmp/amiga_camera_frame.jpg',
+            'status': 'active' if Path('/tmp/amiga_camera_frame.jpg').exists() else 'no_frames'
+        },
+        'oak0_feed': {
+            'source': 'oak0 camera service (gRPC)',
+            'cache_file': '/tmp/amiga_oak0_frame.jpg',
+            'status': 'active' if Path('/tmp/amiga_oak0_frame.jpg').exists() else 'no_frames',
+            'subscription_config': {
+                'every_n': 5,
+                'host': 'localhost',
+                'port': 50010
+            }
+        }
+    }
+
+    # Check frame freshness (if file exists, check modification time)
+    oak0_cache = Path('/tmp/amiga_oak0_frame.jpg')
+    if oak0_cache.exists():
+        age_seconds = time.time() - oak0_cache.stat().st_mtime
+        diagnostics['oak0_feed']['frame_age_seconds'] = round(age_seconds, 2)
+        if age_seconds > 2.0:
+            diagnostics['oak0_feed']['status'] = 'stale'
+            diagnostics['oak0_feed']['warning'] = 'Frames not updating (possible gRPC overload or service down)'
+
+    oak1_cache = Path('/tmp/amiga_camera_frame.jpg')
+    if oak1_cache.exists():
+        age_seconds = time.time() - oak1_cache.stat().st_mtime
+        diagnostics['oak1_feed']['frame_age_seconds'] = round(age_seconds, 2)
+        if age_seconds > 2.0:
+            diagnostics['oak1_feed']['status'] = 'stale'
+
+    return jsonify(diagnostics)
 
 # ==================== Socket.IO Events ====================
 
@@ -351,6 +412,140 @@ async def filter_pose_updater():
         import traceback
         traceback.print_exc()
 
+
+async def oak0_camera_updater():
+    """Subscribe to oak0 camera service and continuously update camera frame cache with auto-reconnect"""
+
+    # Load oak0 camera service config (only once at startup)
+    oak0_config_path = Path(__file__).resolve().parents[2] / 'camera_client' / 'service_config.json'
+
+    if not oak0_config_path.exists():
+        print("⚠️  oak0 camera service config not found at", oak0_config_path)
+        print("    Camera feed 2 disabled")
+        return
+
+    oak0_config = proto_from_json_file(oak0_config_path, EventServiceConfig())
+
+    if oak0_config is None:
+        print("⚠️  oak0 camera service config could not be loaded, camera feed 2 disabled")
+        return
+
+    from farm_ng.core.event_service_pb2 import SubscribeRequest
+    from farm_ng.core.uri_pb2 import Uri
+
+    # Create subscription config (only once)
+    subscription = SubscribeRequest(
+        uri=Uri(path="/rgb", query="service_name=oak0"),
+        every_n=5  # Only process every 5th frame to reduce latency
+    )
+
+    # Auto-reconnect loop
+    retry_delay = 5.0  # Start with 5 second retry
+    max_retry_delay = 30.0
+
+    while True:
+        try:
+            # Subscribe to oak0 RGB stream
+            client = EventClient(oak0_config)
+            print(f"✓ Connecting to oak0 camera service at {oak0_config.host}:{oak0_config.port}")
+
+            # Diagnostics for monitoring subscription health
+            frame_count = 0
+            last_report_time = time.time()
+            last_frame_time = None  # Will be set after first frame
+            connected = False
+
+            # Watchdog to detect stuck subscriptions
+            async def watchdog():
+                """Monitor for stuck subscription (no frames for 30 seconds)"""
+                nonlocal last_frame_time
+                # Wait for first frame
+                while last_frame_time is None:
+                    await asyncio.sleep(1)
+
+                # Now monitor for stuck subscription
+                while True:
+                    await asyncio.sleep(10)
+                    if time.time() - last_frame_time > 30:
+                        print("⚠️  oak0 subscription stuck (no frames for 30s), reconnecting...")
+                        raise TimeoutError("Subscription stuck - no frames received")
+
+            # Start watchdog task
+            watchdog_task = asyncio.create_task(watchdog())
+
+            print(f"🔍 Attempting to subscribe to oak0 camera stream (every_n={subscription.every_n})...")
+            print("⏳ Waiting for first frame from oak0 camera (60s timeout)...")
+
+            # Create subscription with connection timeout
+            connection_timeout = 60.0
+            connection_start = time.time()
+            first_frame_received = False
+
+            subscription_stream = client.subscribe(subscription, decode=True)
+
+            # Process frames
+            async for event, message in subscription_stream:
+                last_frame_time = time.time()  # Update watchdog timer
+                try:
+                    # Check connection timeout on first frame
+                    if not first_frame_received:
+                        if time.time() - connection_start > connection_timeout:
+                            raise ConnectionError("Timeout waiting for first frame from oak0 camera")
+                        print("✓ oak0 camera connected successfully - first frame received")
+                        first_frame_received = True
+                        connected = True
+                        retry_delay = 5.0  # Reset retry delay
+
+                    # Track frame timing for latency diagnostics
+                    current_time = time.time()
+                    frame_count += 1
+
+                    # Get frame timestamp from event
+                    if event.timestamps:
+                        frame_timestamp = event.timestamps[0].stamp.seconds + event.timestamps[0].stamp.nanos / 1e9
+
+                        # Calculate latency (time between frame capture and processing)
+                        latency_ms = (current_time - frame_timestamp) * 1000
+
+                        # Report diagnostics every 5 seconds
+                        if current_time - last_report_time > 5.0:
+                            fps = frame_count / (current_time - last_report_time)
+                            print(f"📊 oak0 camera: {fps:.1f} FPS, latency: {latency_ms:.0f}ms")
+                            frame_count = 0
+                            last_report_time = current_time
+
+                            # Warn if latency is high
+                            if latency_ms > 500:
+                                print(f"⚠️  High latency detected ({latency_ms:.0f}ms) - consider increasing every_n")
+
+                    # Decode image data from camera message
+                    image = cv2.imdecode(np.frombuffer(message.image_data, dtype="uint8"), cv2.IMREAD_UNCHANGED)
+
+                    if image is not None:
+                        # Update oak0 frame cache (overwrites previous frame)
+                        set_oak0_frame(image)
+
+                except Exception as decode_error:
+                    # Silently skip frame decode errors to avoid spamming logs
+                    pass
+
+        except Exception as e:
+            # Cancel watchdog task if it exists
+            if 'watchdog_task' in locals():
+                watchdog_task.cancel()
+                try:
+                    await watchdog_task
+                except asyncio.CancelledError:
+                    pass
+
+            print(f"⚠️  oak0 camera connection lost: {e}")
+            print(f"    Retrying in {retry_delay:.0f} seconds...")
+            await asyncio.sleep(retry_delay)
+
+            # Exponential backoff
+            retry_delay = min(retry_delay * 1.5, max_retry_delay)
+            continue
+
 def background_status_updater():
     """Background thread to emit status updates to all clients"""
     while True:
@@ -406,10 +601,38 @@ def run_async_filter_updater():
     asyncio.set_event_loop(loop)
     loop.run_until_complete(filter_pose_updater())
 
+
+def run_async_oak0_camera_updater():
+    """Run the async oak0 camera updater in its own event loop"""
+    import asyncio
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(oak0_camera_updater())
+
+
 if __name__ == '__main__':
     # Start background filter pose updater
     filter_thread = threading.Thread(target=run_async_filter_updater, daemon=True)
     filter_thread.start()
+
+    # Start background oak0 camera updater
+    # NOTE: gRPC BlockingIOError warnings are harmless (Python 3.8 asyncio issue)
+    # The camera feed will work despite these errors
+    try:
+        oak0_config_path = Path(__file__).resolve().parents[2] / 'camera_client' / 'service_config.json'
+        if oak0_config_path.exists():
+            # Suppress asyncio error logging for gRPC (known Python 3.8 issue)
+            import logging
+            logging.getLogger('asyncio').setLevel(logging.CRITICAL)
+
+            oak0_camera_thread = threading.Thread(target=run_async_oak0_camera_updater, daemon=True)
+            oak0_camera_thread.start()
+            print("✓ Started oak0 camera feed thread")
+            print("  (Note: gRPC BlockingIOError warnings in logs are harmless)")
+        else:
+            print("⚠️  oak0 camera service config not found - Camera Feed 2 disabled")
+    except Exception as e:
+        print(f"⚠️  Could not start oak0 camera thread: {e}")
 
     # Start background status updater
     status_thread = threading.Thread(target=background_status_updater, daemon=True)
