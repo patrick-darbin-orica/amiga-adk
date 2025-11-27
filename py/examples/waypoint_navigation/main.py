@@ -391,6 +391,7 @@ async def main(args) -> None:
             turn_direction=args.turn_direction,
             row_spacing=args.row_spacing,
             headland_buffer=args.headland_buffer,
+            return_to_start=bool(args.return_to_start),  # Convert 0/1 to False/True
         )
 
         actuator: BaseActuator = (
@@ -559,9 +560,15 @@ if __name__ == "__main__":
     parser.add_argument("--no-stop", action="store_true",
                         help="Disable stopping at each waypoint"
     )
-    parser.add_argument("--config", 
-                        type=Path, 
-                        required=True, 
+    parser.add_argument("--return-to-start",
+                        type=int,
+                        choices=[0, 1],
+                        default=1,
+                        help="After last hole, perform row-end sequence to drive back to start (0=disabled, 1=enabled, default: 1)"
+    )
+    parser.add_argument("--config",
+                        type=Path,
+                        required=True,
                         help="The system config."
     )
     args = parser.parse_args()

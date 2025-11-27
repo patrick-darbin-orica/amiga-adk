@@ -52,6 +52,7 @@ IOU_THRESHOLD = 0.5
 IMG_SIZE = 640
 
 FPS = 10  # Reduced from 15 to further limit CPU usage
+YOLO_PROCESS_EVERY_N_FRAMES = 2  # Only run YOLO inference every Nth frame (reduces CPU by ~50%)
 
 # ---------------- Camera / FOV ----------------
 USE_RGB_FOV     = True
@@ -258,12 +259,16 @@ def add_spatial_to_detections(detections: List[dict], depth_frame: np.ndarray,
         # print("[GEOM] Geometric correction disabled by parameter")
 
     for det in detections:
-        # Use center of bounding box
+        # Horizontal center
         x_center = (det['xmin'] + det['xmax']) / 2.0
-        y_center = (det['ymin'] + det['ymax']) / 2.0
 
-        # Get depth at center
-        depth_mm = get_depth_at_point(depth_frame, x_center, y_center)
+        # Vertical: measure at top 20% of pipe (80% from bottom)
+        # This gives more consistent depth for tall pipes vs short pipes
+        bbox_height = det['ymax'] - det['ymin']
+        y_measurement = det['ymin'] + 0.2 * bbox_height  # 20% down from top
+
+        # Get depth at this point
+        depth_mm = get_depth_at_point(depth_frame, x_center, y_measurement)
 
         if depth_mm is None or depth_mm < DEPTH_LOWER_MM or depth_mm > DEPTH_UPPER_MM:
             continue  # Skip detections with invalid depth
@@ -285,8 +290,8 @@ def add_spatial_to_detections(detections: List[dict], depth_frame: np.ndarray,
                         'diagnostics': diagnostics
                     }
         else:
-            # Fallback to standard depth
-            coords_3d = pixel_to_camera_coords(x_center, y_center, depth_mm,
+            # Fallback to standard depth (using measurement point)
+            coords_3d = pixel_to_camera_coords(x_center, y_measurement, depth_mm,
                                                img_w, img_h, intrinsics)
 
         spatial_dets.append(SpatialDetection(det, coords_3d))
@@ -972,6 +977,9 @@ with pipeline:
     min_frame_interval = 1.0 / target_process_fps
     last_process_time = time.time()
 
+    # Initialize detections list for frame skipping (reuse last detections when not running inference)
+    detections = []
+
     try:
         while pipeline.isRunning():
             # Rate limiting: Skip processing if we're going too fast
@@ -1036,8 +1044,14 @@ with pipeline:
             if latestRgb is None or latestDepth is None:
                 continue
 
-            # Run YOLO detection on host
-            detections = detector.detect(latestRgb)
+            # Frame skipping for YOLO inference (reduce CPU load)
+            # Only run inference every Nth frame, reuse last detections otherwise
+            should_run_inference = (frame_count % YOLO_PROCESS_EVERY_N_FRAMES) == 0
+
+            if should_run_inference:
+                # Run YOLO detection on host
+                detections = detector.detect(latestRgb)
+            # else: reuse detections from previous frame (already stored in 'detections')
 
             # Add spatial coordinates from depth using actual calibration
             h, w = latestRgb.shape[:2]

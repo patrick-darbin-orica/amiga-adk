@@ -40,8 +40,8 @@ class NavigationManager:
         canbus_client: Optional[EventClient] = None,
         actuator_enabled: bool = True,  # TODO: Remove
         actuator_id: int = 0,
-        actuator_open_seconds: float = 0.2,#6.5, 
-        actuator_close_seconds: float = 0.3,#7,
+        actuator_open_seconds: float = 6.5, 
+        actuator_close_seconds: float = 7,
         actuator_rate_hz: float = 10.0,
     ):
         self.filter_client = filter_client
@@ -722,7 +722,11 @@ class NavigationManager:
                     success = await self.execute_single_track(final_approach_track, do_post_actions=True)
                 else:
                     # Turn/maneuver segments - no deployment
-                    success = await self.execute_single_track(track_segment, do_post_actions=False)
+                    # Calculate dynamic timeout based on number of waypoints (assume ~1.5s per waypoint)
+                    num_waypoints = len(track_segment.waypoints)
+                    dynamic_timeout = max(30.0, num_waypoints * 1.5 + 10.0)  # At least 30s, or 1.5s/wp + 10s buffer
+                    logger.info(f"Using dynamic timeout of {dynamic_timeout:.1f}s for {num_waypoints} waypoints")
+                    success = await self.execute_single_track(track_segment, timeout=dynamic_timeout, do_post_actions=False)
 
                 failed_attempts: int = 0
 
@@ -749,7 +753,14 @@ class NavigationManager:
                     is_waypoint_segment = "waypoint" in segment_name.lower() and "row_end" not in segment_name.lower()
                     is_approach_segment = "approach" in segment_name.lower()
                     should_deploy = is_waypoint_segment and not is_approach_segment
-                    success = await self.execute_single_track(track_segment, do_post_actions=should_deploy)
+
+                    # Calculate dynamic timeout for maneuver segments
+                    if not is_waypoint_segment and not is_approach_segment:
+                        num_waypoints = len(track_segment.waypoints)
+                        dynamic_timeout = max(30.0, num_waypoints * 1.5 + 10.0)
+                        success = await self.execute_single_track(track_segment, timeout=dynamic_timeout, do_post_actions=should_deploy)
+                    else:
+                        success = await self.execute_single_track(track_segment, do_post_actions=should_deploy)
 
             logger.info(
                 f"Navigation completed after {segment_count} segments")

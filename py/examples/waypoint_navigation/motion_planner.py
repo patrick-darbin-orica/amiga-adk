@@ -175,6 +175,7 @@ class MotionPlanner:
         turn_direction: str,
         row_spacing: float,
         headland_buffer: float,
+        return_to_start: bool = False,
     ):
         self.client = client
         self.waypoints: Dict[int, Pose3F64] = {}
@@ -182,19 +183,19 @@ class MotionPlanner:
         self.last_row_waypoint_index = last_row_waypoint_index
         self.row_spacing = row_spacing
         self.headland_buffer = headland_buffer
+        self.return_to_start = return_to_start
         self.current_waypoint_index = 0
         self.current_pose: Optional[Pose3F64] = None
         self.pose_query_task: asyncio.Task | None = None
         self.should_poll: bool = True
-        # Track if we have finished all row end maneuvers (total of 5)
+        # Track if we have finished all row end maneuvers (2 segments: headland buffer + π turn)
         self.row_end_segment_index: int = 1
         if turn_direction not in ["left", "right"]:
             raise ValueError("turn_direction must be either 'left' or 'right'")
         self.turn_angle_sign: float = 1.0 if turn_direction == "left" else -1.0
 
-        # Cached turn waypoints for consistent retry behavior
+        # Cached turn waypoints for consistent retry behavior (only segment 1 is straight)
         self._turn_waypoint_1: Optional[Pose3F64] = None
-        self._turn_waypoint_3: Optional[Pose3F64] = None
 
         if not isinstance(waypoints_path, Path):
             waypoints_path = Path(waypoints_path)
@@ -307,13 +308,13 @@ class MotionPlanner:
         return current_pose
 
     async def create_tool_to_origin_segment(self) -> Track:
-        """Micro-move: tool→robot_origin. Advances by the tool offset distance from config."""
-        # Use the actual tool offset from config file
-        advance_m = float(self.tool_offset.a_from_b.translation[0])
+        """Micro-move after dipper deployment. Advances 0.20m forward to position chute."""
+        # Fixed advance distance after dipper deployment (not the full tool offset)
+        advance_m = 0.20
         current = await self._get_current_pose()
         track_builder = TrackBuilder(start=current)
         track_builder.create_straight_segment(next_frame_b="tool_to_origin", distance=advance_m, spacing=0.05)
-        logger.info(f"Creating tool-to-origin segment: advancing {advance_m:.3f}m (from tool_config.json)")
+        logger.info(f"Creating post-dipper segment: advancing {advance_m:.3f}m")
         return track_builder.track
 
     async def override_next_waypoint_world_xy(self, X_w: float, Y_w: float, yaw_rad: float | None = None) -> int:
@@ -766,20 +767,19 @@ class MotionPlanner:
     async def _row_end_maneuver(self, index: int) -> Track:
         """Create a row end maneuver segment based on the index.
 
-        New approach: For straight segments (1 & 3), computes and caches target waypoint
-        on first attempt, then reuses it on retries. This prevents off-course behavior.
+        Two-segment row-end maneuver using π turn:
+        1. Drive forward into headland buffer
+        2. π (180°) turn to next row
 
         Args:
-            index: The index of the row end maneuver (1 to 4)
+            index: The index of the row end maneuver (1 to 2)
                 1: Drive forward into headland buffer
-                2: Turn 90° in place
-                3: Drive across row spacing
-                4: Turn 90° in place
+                2: π turn to next row (replaces the old 3-segment turn sequence)
         Returns:
             The track segment for the row end maneuver (Track)
         """
-        if index < 1 or index > 4:
-            raise ValueError("index must be between 1 and 4")
+        if index < 1 or index > 2:
+            raise ValueError("index must be between 1 and 2")
 
         track_segment: Track
         next_frame_b = f"row_end_{index}"
@@ -792,7 +792,7 @@ class MotionPlanner:
                 self._turn_waypoint_1 = self._compute_waypoint_ahead(
                     current_pose, distance=self.headland_buffer
                 )
-                # logger.info(f"[TURN] Created virtual waypoint 1 at {self.headland_buffer}m ahead")
+                logger.info(f"[TURN] Created virtual waypoint 1 at {self.headland_buffer}m ahead")
 
             # Build track from current position to cached waypoint
             current_pose = await self._get_current_pose()
@@ -804,37 +804,19 @@ class MotionPlanner:
             )
             track_segment = track_builder.track
 
-        elif index == 2 or index == 4:
-            # Segment 2 & 4: Turn 90° in place
-            # Turns always regenerate from current pose (no fixed target)
+        else:  # index == 2
+            # Segment 2: π turn to next row
+            # This replaces the old 3-segment sequence (turn 90° → drive across → turn 90°)
             current_pose = await self._get_current_pose()
             track_builder = TrackBuilder(start=current_pose)
-            track_builder.create_turn_segment(
+            track_builder.create_arc_segment(
                 next_frame_b=next_frame_b,
-                angle=radians(90 * self.turn_angle_sign),
-                spacing=0.15  # Increased from 0.1 to reduce waypoint density (fewer CAN messages)
+                radius=self.row_spacing / 2,  # Turn radius fits exactly to next row
+                angle=radians(180 * self.turn_angle_sign),  # π turn
+                spacing=0.15
             )
             track_segment = track_builder.track
-
-        else:  # index == 3
-            # Segment 3: Drive across row spacing
-            # Cache target waypoint on first attempt, reuse on retry
-            if not hasattr(self, '_turn_waypoint_3') or self._turn_waypoint_3 is None:
-                current_pose = await self._get_current_pose()
-                self._turn_waypoint_3 = self._compute_waypoint_ahead(
-                    current_pose, distance=self.row_spacing
-                )
-                logger.info(f"[TURN] Created virtual waypoint 3 at {self.row_spacing}m ahead")
-
-            # Build track from current position to cached waypoint
-            current_pose = await self._get_current_pose()
-            track_builder = TrackBuilder(start=current_pose)
-            track_builder.create_straight_segment(
-                next_frame_b=next_frame_b,
-                distance=self.row_spacing,
-                spacing=0.5
-            )
-            track_segment = track_builder.track
+            logger.info(f"[TURN] Created π turn with radius {self.row_spacing / 2}m")
 
         return track_segment
 
@@ -872,7 +854,7 @@ class MotionPlanner:
     def _clear_turn_waypoints(self):
         """Clear cached turn waypoints when starting new turn sequence."""
         self._turn_waypoint_1 = None
-        self._turn_waypoint_3 = None
+        # Note: _turn_waypoint_3 no longer exists with π turn implementation
 
     async def _shutdown(self):
         """Shutdown the motion planner."""
@@ -915,9 +897,28 @@ class MotionPlanner:
             The next track segment (Track)
         """
         if self.current_waypoint_index >= len(self.waypoints):
-            logger.info("No more waypoints to navigate to.")
-            asyncio.create_task(self._shutdown())
-            return (None, None)
+            # Check if return-to-start is enabled and we haven't performed the return yet
+            if self.return_to_start and self.row_end_segment_index == 1:
+                # Trigger return-to-start sequence by performing row-end maneuver
+                logger.info("Reached last waypoint. Performing row-end sequence to return to start...")
+                # We'll now execute row-end segments 1-2 (headland buffer + π turn)
+                current_index = self.row_end_segment_index
+                track_segment = await self._row_end_maneuver(current_index)
+                self.row_end_segment_index += 1
+                return (track_segment, f"return_to_start_{current_index}")
+            elif self.return_to_start and self.row_end_segment_index > 1 and self.row_end_segment_index < 3:
+                # Continue executing return-to-start row-end segments
+                current_index = self.row_end_segment_index
+                track_segment = await self._row_end_maneuver(current_index)
+                self.row_end_segment_index += 1
+                return (track_segment, f"return_to_start_{current_index}")
+            else:
+                # No return-to-start or already completed return sequence
+                logger.info("No more waypoints to navigate to.")
+                # Reset row_end_segment_index in case we want to restart
+                self.row_end_segment_index = 1
+                asyncio.create_task(self._shutdown())
+                return (None, None)
 
         # Check if this is the very first maneuver:
         if self.current_waypoint_index == 0:
@@ -1016,12 +1017,20 @@ class MotionPlanner:
             return (track, seg_name)
 
         # We're switching to the next row
-        # 1. Check if we have finished all row end maneuvers
-        if self.row_end_segment_index >= 5:
-            logger.info(
-                "Finished all row end maneuvers, moving to the next row.")
+        # 1. Ensure row_end_segment_index is valid (in case of previous failures)
+        if self.row_end_segment_index < 1 or self.row_end_segment_index > 3:
+            logger.warning(f"[DEBUG] row_end_segment_index={self.row_end_segment_index} is invalid, resetting to 1")
+            self.row_end_segment_index = 1
+
+        logger.info(f"[DEBUG] At row-end check: row_end_segment_index={self.row_end_segment_index}, current_waypoint_index={self.current_waypoint_index}")
+
+        # 2. Check if we have finished all row end maneuvers (now only 2 segments with π turn)
+        if self.row_end_segment_index >= 3:
+            logger.info("Finished all row end maneuvers, moving to the next row.")
             # Clear cached turn waypoints for next turn sequence
             self._clear_turn_waypoints()
+            # Reset row_end_segment_index for the next row-end sequence
+            self.row_end_segment_index = 1
             curr_index = self.current_waypoint_index
 
             # NEW: Wait for vision buffer to populate, then check for collar detection

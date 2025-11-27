@@ -30,9 +30,9 @@
                 </div>
             </div>
 
-            <!-- Column 2 Row 1: Camera Feed 1 -->
+            <!-- Column 2 Row 1: Camera Feed 1 (oak1 with detections) -->
             <div class="panel camera-panel">
-                <h2>Camera Feed</h2>
+                <h2>Camera Feed 1 (oak1 - Detections)</h2>
                 <div class="video-container">
                     <img id="camera-feed" src="{{ url_for('video_feed') }}" alt="Camera Feed">
                     <div id="camera-overlay">
@@ -41,12 +41,14 @@
                 </div>
             </div>
 
-            <!-- Column 3 Row 1: Detection Scatter Plot 1 and System Log -->
-            <div class="panel detection-panel">
-                <h2>Detection Scatter Plot</h2>
-                <div id="detection-plot-container"></div>
-                <div class="plot-legend">
-                    <span class="legend-item"><span class="dot detection"></span> Detection</span>
+            <!-- Column 3 Row 1: Camera Feed 2 (oak0 mono) - Moved from Row 2 -->
+            <div class="panel camera-panel">
+                <h2>Camera Feed 2 (oak0 - Mono)</h2>
+                <div class="video-container">
+                    <img id="camera-feed-2" src="{{ url_for('video_feed_2') }}" alt="oak0 Mono Camera Feed">
+                    <div id="camera-overlay-2">
+                        <div class="camera-info">Waiting for oak0 mono camera...</div>
+                    </div>
                 </div>
             </div>
 
@@ -91,24 +93,11 @@
                 </div>
             </div>
 
-            <!-- Column 1 Row 2: Camera Feed 2 (oak0) -->
-            <div class="panel camera-panel">
-                <h2>Camera Feed 2 (oak0)</h2>
-                <div class="video-container">
-                    <img id="camera-feed-2" src="{{ url_for('video_feed_2') }}" alt="oak0 Camera Feed">
-                    <div id="camera-overlay-2">
-                        <div class="camera-info">Waiting for oak0 camera...</div>
-                    </div>
-                </div>
+            <!-- Column 2 Row 2: Placeholder (removed scatter plot) -->
+            <div class="panel">
+                <h2>Reserved</h2>
             </div>
 
-            <!-- Column 2 Row 2: Detection Scatter Plot 2 (Placeholder) -->
-            <div class="panel detection-panel">
-                <h2>Detection Plot 2</h2>
-                <div id="detection-plot-container-2" style="display: flex; align-items: center; justify-content: center; color: #666;">
-                    <span>Not Connected</span>
-                </div>
-            </div>
             <!-- Column 3 Row 2: System Log -->
             <div class="panel sys-log-panel">
                 <h2>System Log</h2>

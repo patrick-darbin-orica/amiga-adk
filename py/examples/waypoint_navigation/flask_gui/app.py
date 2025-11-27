@@ -88,8 +88,9 @@ def video_feed():
 @app.route('/video_feed_2')
 def video_feed_2():
     """
-    Stream oak0 camera feed (farm-ng camera service).
+    Stream oak0 mono camera feed (farm-ng camera service).
     Reads the latest frame from oak0 camera via shared camera frame file.
+    Uses mono (left camera) for better performance (1 channel vs 3 for RGB).
     """
     def generate():
         while True:
@@ -100,7 +101,7 @@ def video_feed_2():
                            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
                 except Exception as e:
                     print(f"Error streaming oak0 frame: {e}")
-            time.sleep(1/15)  # 15 FPS to match oak1 camera and reduce latency
+            time.sleep(1/10)  # 10 FPS for better performance
 
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
 
@@ -434,9 +435,10 @@ async def oak0_camera_updater():
     from farm_ng.core.uri_pb2 import Uri
 
     # Create subscription config (only once)
+    # Using /left (mono) instead of /rgb for better performance (1 channel vs 3 channels = 3x less data)
     subscription = SubscribeRequest(
-        uri=Uri(path="/rgb", query="service_name=oak0"),
-        every_n=5  # Only process every 5th frame to reduce latency
+        uri=Uri(path="/left", query="service_name=oak0"),
+        every_n=1  # Process every frame for smoother video (changed from 5)
     )
 
     # Auto-reconnect loop
@@ -483,9 +485,14 @@ async def oak0_camera_updater():
 
             subscription_stream = client.subscribe(subscription, decode=True)
 
-            # Process frames
+            # Process frames (with frame skipping for performance)
+            frame_skip_counter = 0
+            PROCESS_EVERY_N_FRAMES = 3  # Only process every 3rd frame (~10 FPS)
+
             async for event, message in subscription_stream:
                 last_frame_time = time.time()  # Update watchdog timer
+                frame_skip_counter += 1
+
                 try:
                     # Check connection timeout on first frame
                     if not first_frame_received:
@@ -500,23 +507,23 @@ async def oak0_camera_updater():
                     current_time = time.time()
                     frame_count += 1
 
-                    # Get frame timestamp from event
-                    if event.timestamps:
-                        frame_timestamp = event.timestamps[0].stamp.seconds + event.timestamps[0].stamp.nanos / 1e9
+                    # Skip frames to reduce CPU load (only process every Nth frame)
+                    if frame_skip_counter % PROCESS_EVERY_N_FRAMES != 0:
+                        continue  # Skip this frame, don't decode/encode/write
 
-                        # Calculate latency (time between frame capture and processing)
-                        latency_ms = (current_time - frame_timestamp) * 1000
-
-                        # Report diagnostics every 5 seconds
-                        if current_time - last_report_time > 5.0:
-                            fps = frame_count / (current_time - last_report_time)
-                            print(f"📊 oak0 camera: {fps:.1f} FPS, latency: {latency_ms:.0f}ms")
-                            frame_count = 0
-                            last_report_time = current_time
-
-                            # Warn if latency is high
-                            if latency_ms > 500:
-                                print(f"⚠️  High latency detected ({latency_ms:.0f}ms) - consider increasing every_n")
+                    # Report diagnostics every 5 seconds
+                    if current_time - last_report_time > 5.0:
+                        fps = frame_count / (current_time - last_report_time)
+                        # Check if cache file exists and is fresh
+                        import os
+                        cache_exists = os.path.exists('/tmp/amiga_oak0_frame.jpg')
+                        cache_age = 0
+                        if cache_exists:
+                            cache_age = current_time - os.path.getmtime('/tmp/amiga_oak0_frame.jpg')
+                        effective_fps = fps / PROCESS_EVERY_N_FRAMES
+                        print(f"📊 oak0 camera: {fps:.1f} FPS received, {effective_fps:.1f} FPS processed, cache: {'OK' if cache_age < 2 else 'STALE'}")
+                        frame_count = 0
+                        last_report_time = current_time
 
                     # Decode image data from camera message
                     image = cv2.imdecode(np.frombuffer(message.image_data, dtype="uint8"), cv2.IMREAD_UNCHANGED)
@@ -524,10 +531,17 @@ async def oak0_camera_updater():
                     if image is not None:
                         # Update oak0 frame cache (overwrites previous frame)
                         set_oak0_frame(image)
+                    else:
+                        # Log first decode failure
+                        if frame_count == 1:
+                            print("⚠️  oak0: Failed to decode first frame")
 
                 except Exception as decode_error:
-                    # Silently skip frame decode errors to avoid spamming logs
-                    pass
+                    # Log first frame error, then suppress to avoid spam
+                    if frame_count == 1:
+                        print(f"⚠️  oak0 frame processing error: {decode_error}")
+                        import traceback
+                        traceback.print_exc()
 
         except Exception as e:
             # Cancel watchdog task if it exists
@@ -597,7 +611,16 @@ def background_status_updater():
 def run_async_filter_updater():
     """Run the async filter updater in its own event loop"""
     import asyncio
-    loop = asyncio.new_event_loop()
+    import sys
+    # CRITICAL FIX: Set selector event loop for Python 3.8 gRPC compatibility
+    # This prevents BlockingIOError in threading + asyncio + gRPC
+    if sys.platform != 'win32':
+        import selectors
+        selector = selectors.SelectSelector()
+        loop = asyncio.SelectorEventLoop(selector)
+    else:
+        loop = asyncio.new_event_loop()
+
     asyncio.set_event_loop(loop)
     loop.run_until_complete(filter_pose_updater())
 
@@ -605,9 +628,24 @@ def run_async_filter_updater():
 def run_async_oak0_camera_updater():
     """Run the async oak0 camera updater in its own event loop"""
     import asyncio
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(oak0_camera_updater())
+    import sys
+    try:
+        # CRITICAL FIX: Set selector event loop for Python 3.8 gRPC compatibility
+        # This prevents BlockingIOError in threading + asyncio + gRPC
+        if sys.platform != 'win32':
+            import selectors
+            selector = selectors.SelectSelector()
+            loop = asyncio.SelectorEventLoop(selector)
+        else:
+            loop = asyncio.new_event_loop()
+
+        asyncio.set_event_loop(loop)
+        print("✓ oak0 camera thread event loop created (SelectorEventLoop for gRPC compatibility)")
+        loop.run_until_complete(oak0_camera_updater())
+    except Exception as e:
+        print(f"⚠️  CRITICAL: oak0 camera thread crashed: {e}")
+        import traceback
+        traceback.print_exc()
 
 
 if __name__ == '__main__':
@@ -616,23 +654,23 @@ if __name__ == '__main__':
     filter_thread.start()
 
     # Start background oak0 camera updater
-    # NOTE: gRPC BlockingIOError warnings are harmless (Python 3.8 asyncio issue)
-    # The camera feed will work despite these errors
+    # NOTE: Using SelectorEventLoop to prevent Python 3.8 gRPC BlockingIOError issues
     try:
         oak0_config_path = Path(__file__).resolve().parents[2] / 'camera_client' / 'service_config.json'
         if oak0_config_path.exists():
-            # Suppress asyncio error logging for gRPC (known Python 3.8 issue)
+            # Suppress gRPC asyncio warnings (now using SelectorEventLoop to prevent them)
             import logging
             logging.getLogger('asyncio').setLevel(logging.CRITICAL)
 
             oak0_camera_thread = threading.Thread(target=run_async_oak0_camera_updater, daemon=True)
             oak0_camera_thread.start()
-            print("✓ Started oak0 camera feed thread")
-            print("  (Note: gRPC BlockingIOError warnings in logs are harmless)")
+            print("✓ Started oak0 camera feed thread (using SelectorEventLoop for gRPC compatibility)")
         else:
             print("⚠️  oak0 camera service config not found - Camera Feed 2 disabled")
     except Exception as e:
         print(f"⚠️  Could not start oak0 camera thread: {e}")
+        import traceback
+        traceback.print_exc()
 
     # Start background status updater
     status_thread = threading.Thread(target=background_status_updater, daemon=True)

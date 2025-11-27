@@ -29,8 +29,8 @@ def set_oak0_frame(frame: np.ndarray) -> None:
 
     with _frame_lock:
         try:
-            # Encode as JPEG for efficiency
-            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+            # Encode as JPEG with lower quality for faster processing (70 instead of 85)
+            _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
 
             # Write atomically using temp file + rename
             temp_file = FRAME_FILE_OAK0.with_suffix('.tmp')

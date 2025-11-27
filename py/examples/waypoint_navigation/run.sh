@@ -15,7 +15,8 @@ python main.py \
  --last-row-waypoint-index 3 \
  --turn-direction left \
  --row-spacing 6 \
- --headland-buffer 3.0 \
+ --headland-buffer 2.0 \
+ --return-to-start 1 \
  --actuator-enabled --actuator-id 0 --actuator-rate-hz 5.0 2>&1 | tee "$LOG_FILE"
 
 echo "Log saved to: $LOG_FILE"
