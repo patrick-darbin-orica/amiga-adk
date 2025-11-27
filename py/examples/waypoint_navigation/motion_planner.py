@@ -310,7 +310,7 @@ class MotionPlanner:
     async def create_tool_to_origin_segment(self) -> Track:
         """Micro-move after dipper deployment. Advances 0.20m forward to position chute."""
         # Fixed advance distance after dipper deployment (not the full tool offset)
-        advance_m = 0.20
+        advance_m = 0.25
         current = await self._get_current_pose()
         track_builder = TrackBuilder(start=current)
         track_builder.create_straight_segment(next_frame_b="tool_to_origin", distance=advance_m, spacing=0.05)

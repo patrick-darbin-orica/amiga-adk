@@ -553,7 +553,7 @@ class NavigationManager:
                         close_seconds=self.actuator_close_seconds,
                         rate_hz=self.actuator_rate_hz,
                         settle_before=3.0,
-                        settle_between=0.0,
+                        settle_between=2.0,
                         wait_for_enter_between=False,
                         enter_prompt="Hole measured. Press ENTER to close the chute...",
                         enter_timeout=30.0,      # safety timeout
