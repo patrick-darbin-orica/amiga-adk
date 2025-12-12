@@ -22,7 +22,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from utils.pose_cache import get_latest_pose, set_latest_pose
 from utils.navigation_state import get_navigation_state, get_waypoint_status
 from utils.camera_frame_cache import get_latest_frame_bytes
-from utils.oak0_camera_cache import get_oak0_frame_bytes, set_oak0_frame
+from utils.oak0_camera_cache import get_oak0_frame_bytes, set_oak0_frame, is_inference_active
 
 # Import filter client dependencies
 from farm_ng.core.event_client import EventClient
@@ -342,8 +342,10 @@ def load_waypoint_data():
     """Load waypoint data from CSV for plotting"""
     waypoints = []
 
-    # Try to read from surveyed waypoints
-    waypoint_file = Path(__file__).resolve().parents[1] / 'surveyed-waypoints' / 'physicsLabBack2Lanes.csv'
+    # Try to read from surveyed waypoints (configurable via env var)
+    # Default to kktcBack2Lanes.csv to match run.sh
+    csv_filename = os.environ.get('WAYPOINT_CSV', 'kktcBack2Lanes.csv')
+    waypoint_file = Path(__file__).resolve().parents[1] / 'surveyed-waypoints' / csv_filename
 
     if waypoint_file.exists():
         try:
@@ -416,30 +418,35 @@ async def filter_pose_updater():
 
 async def oak0_camera_updater():
     """Subscribe to oak0 camera service and continuously update camera frame cache with auto-reconnect"""
+    print("[oak0] Starting oak0 camera updater thread...", flush=True)
 
     # Load oak0 camera service config (only once at startup)
     oak0_config_path = Path(__file__).resolve().parents[2] / 'camera_client' / 'service_config.json'
 
     if not oak0_config_path.exists():
-        print("⚠️  oak0 camera service config not found at", oak0_config_path)
-        print("    Camera feed 2 disabled")
+        print(f"⚠️  [oak0] Service config not found at {oak0_config_path}", flush=True)
+        print("    Camera feed 2 disabled", flush=True)
         return
 
     oak0_config = proto_from_json_file(oak0_config_path, EventServiceConfig())
 
     if oak0_config is None:
-        print("⚠️  oak0 camera service config could not be loaded, camera feed 2 disabled")
+        print("⚠️  [oak0] Service config could not be loaded, camera feed 2 disabled", flush=True)
         return
+
+    print(f"✓ [oak0] Loaded config: {oak0_config.host}:{oak0_config.port}", flush=True)
 
     from farm_ng.core.event_service_pb2 import SubscribeRequest
     from farm_ng.core.uri_pb2 import Uri
 
     # Create subscription config (only once)
-    # Using /left (mono) instead of /rgb for better performance (1 channel vs 3 channels = 3x less data)
+    # Using /rgb for color data (can use /left for mono if better performance needed)
+    # Note: service_name is "oak/0" not "oak0" (farm-ng uses oak/0 format)
     subscription = SubscribeRequest(
-        uri=Uri(path="/left", query="service_name=oak0"),
-        every_n=1  # Process every frame for smoother video (changed from 5)
+        uri=Uri(path="/rgb", query="service_name=oak/0"),
+        every_n=1  # Process every frame for smoother video
     )
+    print("✓ [oak0] Created subscription: path=/rgb, service_name=oak/0, every_n=1", flush=True)
 
     # Auto-reconnect loop
     retry_delay = 5.0  # Start with 5 second retry
@@ -448,8 +455,9 @@ async def oak0_camera_updater():
     while True:
         try:
             # Subscribe to oak0 RGB stream
+            print(f"[oak0] Creating EventClient for {oak0_config.host}:{oak0_config.port}...")
             client = EventClient(oak0_config)
-            print(f"✓ Connecting to oak0 camera service at {oak0_config.host}:{oak0_config.port}")
+            print(f"✓ [oak0] EventClient created, connecting to camera service...")
 
             # Diagnostics for monitoring subscription health
             frame_count = 0
@@ -524,6 +532,14 @@ async def oak0_camera_updater():
                         print(f"📊 oak0 camera: {fps:.1f} FPS received, {effective_fps:.1f} FPS processed, cache: {'OK' if cache_age < 2 else 'STALE'}")
                         frame_count = 0
                         last_report_time = current_time
+
+                    # Check if inference is active - if so, don't overwrite processed frames
+                    if is_inference_active():
+                        # Inference is running, skip writing raw frames to avoid conflict
+                        # Log once when we first detect inference is active
+                        if frame_count == 1 or (frame_count % 50 == 0):
+                            print(f"[oak0] Inference active - skipping raw frame writes (frame {frame_count})")
+                        continue
 
                     # Decode image data from camera message
                     image = cv2.imdecode(np.frombuffer(message.image_data, dtype="uint8"), cv2.IMREAD_UNCHANGED)
@@ -640,10 +656,11 @@ def run_async_oak0_camera_updater():
             loop = asyncio.new_event_loop()
 
         asyncio.set_event_loop(loop)
-        print("✓ oak0 camera thread event loop created (SelectorEventLoop for gRPC compatibility)")
+        print("✓ oak0 camera thread event loop created (SelectorEventLoop for gRPC compatibility)", flush=True)
+        print("[oak0] About to start oak0_camera_updater()...", flush=True)
         loop.run_until_complete(oak0_camera_updater())
     except Exception as e:
-        print(f"⚠️  CRITICAL: oak0 camera thread crashed: {e}")
+        print(f"⚠️  CRITICAL: oak0 camera thread crashed: {e}", flush=True)
         import traceback
         traceback.print_exc()
 
@@ -676,10 +693,23 @@ if __name__ == '__main__':
     status_thread = threading.Thread(target=background_status_updater, daemon=True)
     status_thread.start()
 
+    # Get Tailscale IP for remote access
+    import subprocess
+    try:
+        tailscale_ip = subprocess.check_output(['tailscale', 'ip', '-4'], text=True).strip()
+    except Exception:
+        tailscale_ip = None
+
     print("\n" + "="*70)
     print("AMIGA WAYPOINT NAVIGATION - WEB GUI")
     print("="*70)
-    print(f"Starting Flask server on http://0.0.0.0:5000")
+    print("Starting Flask server on http://0.0.0.0:5000")
+    print("")
+    print("Access URLs:")
+    print("  Local:       http://localhost:5000")
+    if tailscale_ip:
+        print(f"  Tailscale:   http://{tailscale_ip}:5000")
+    print("")
     print("Open in browser to monitor and control navigation")
     print("="*70 + "\n")
 

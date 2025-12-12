@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import numpy as np
+from pathlib import Path
 from typing import Optional, TYPE_CHECKING, Dict, List
 
 from farm_ng.core.event_client import EventClient
@@ -17,6 +18,7 @@ from google.protobuf.empty_pb2 import Empty
 from utils.actuator import BaseActuator, NullActuator
 from utils.canbus import trigger_dipbob, imu_wiggle
 from utils.navigation_state import set_navigation_state
+from utils.hole_alignment import align_with_oak0
 
 logger = logging.getLogger(__name__)
 
@@ -40,9 +42,17 @@ class NavigationManager:
         canbus_client: Optional[EventClient] = None,
         actuator_enabled: bool = True,  # TODO: Remove
         actuator_id: int = 0,
-        actuator_open_seconds: float = 6.5, 
+        actuator_open_seconds: float = 6.5,
         actuator_close_seconds: float = 7,
         actuator_rate_hz: float = 10.0,
+        # Hole alignment options
+        hole_alignment_enabled: bool = True,
+        hole_alignment_model_path: Optional[Path] = None,
+        hole_alignment_tolerance_px: int = 40,
+        hole_alignment_move_gain: float = 0.001,
+        hole_alignment_derivative_gain: float = 0.002,
+        hole_alignment_max_velocity: float = 0.15,
+        hole_alignment_timeout: float = 30.0,
     ):
         self.filter_client = filter_client
         self.controller_client = controller_client
@@ -78,6 +88,20 @@ class NavigationManager:
             logger.warning(
                 "Actuator was enabled but no CAN bus client provided; disabling actuator pulses.")
             self.actuator_enabled = False
+
+        # Hole alignment configuration
+        self.hole_alignment_enabled = hole_alignment_enabled and (self.canbus_client is not None)
+        self.hole_alignment_model_path = hole_alignment_model_path or Path(__file__).parent.parent / "detection" / "best.engine"
+        self.hole_alignment_tolerance_px = hole_alignment_tolerance_px
+        self.hole_alignment_move_gain = hole_alignment_move_gain
+        self.hole_alignment_derivative_gain = hole_alignment_derivative_gain
+        self.hole_alignment_max_velocity = hole_alignment_max_velocity
+        self.hole_alignment_timeout = hole_alignment_timeout
+
+        if hole_alignment_enabled and self.canbus_client is None:
+            logger.warning(
+                "Hole alignment was enabled but no CAN bus client provided; disabling hole alignment.")
+            self.hole_alignment_enabled = False
 
     async def _cancel_following(self):
         async with self._controller_lock:
@@ -227,6 +251,8 @@ class NavigationManager:
                 # Only log if status is TRACK_ABORTED or TRACK_CANCELLED
                 if track_status in [TrackStatusEnum.TRACK_ABORTED, TrackStatusEnum.TRACK_CANCELLED]:
                     logger.info(f"Track status changed: {status_name}")
+                # Log ALL status changes for debugging
+                logger.info(f"[TRACK DEBUG] Status change: {TrackStatusEnum.Name(prev_status) if prev_status is not None else 'None'} -> {status_name}")
                 # Update Flask GUI state (always update GUI regardless of status)
                 set_navigation_state(track_status=status_name)
             except Exception as e:
@@ -234,7 +260,7 @@ class NavigationManager:
 
         # Check for completion or failure
         if track_status == TrackStatusEnum.TRACK_COMPLETE:
-            # logger.info("SUCCESS: Track completed")
+            logger.info("[TRACK DEBUG] TRACK_COMPLETE received, setting track_complete_event")
             self.track_complete_event.set()
 
         elif track_status in [
@@ -306,30 +332,24 @@ class NavigationManager:
 
         logger.info("Cleanup completed")
 
-    async def _wait_for_cone_or_skip(self) -> bool:
+    async def _wait_for_cone_or_skip(self, vision_timeout: float = 10.0) -> bool:
         """
         Wait for vision to detect a cone in the search zone if vision is enabled.
         If vision is NOT enabled, proceed immediately to CSV waypoint.
-        If vision IS enabled, wait indefinitely for cone detection.
+        If vision IS enabled, wait up to vision_timeout seconds for cone detection.
         Returns True to proceed, False if shutdown requested.
-        """
-        # Import here to avoid circular dependency
-        import subprocess
 
-        # Check if vision (detectionPlot.py) is running
-        try:
-            result = subprocess.run(
-                ["pgrep", "-f", "detectionPlot.py"],
-                capture_output=True,
-                text=True,
-                timeout=1.0
-            )
-            vision_enabled = (result.returncode == 0)
-        except Exception:
-            vision_enabled = False
+        Args:
+            vision_timeout: Maximum time to wait for collar detection (seconds, default 10.0)
+        """
+        from pathlib import Path
+
+        # Check if vision is running by looking for .vision_running flag file
+        vision_flag_file = Path(__file__).parent.parent / ".vision_running"
+        vision_enabled = vision_flag_file.exists()
 
         if not vision_enabled:
-            logger.info("[VISION] Vision not enabled (detectionPlot.py not running), proceeding to CSV waypoint")
+            logger.info("[VISION] Vision not enabled (.vision_running flag not found), proceeding to CSV waypoint")
             return True  # Vision not enabled, proceed to CSV waypoint immediately
 
         # Vision is enabled - only reset cone detection flag if not already detected (avoid race condition)
@@ -337,16 +357,23 @@ class NavigationManager:
             self.cone_detected_for_current_wp = False
         self.current_waypoint_start_time = asyncio.get_event_loop().time()
 
-        # logger.info("[VISION] Vision enabled - waiting indefinitely for cone detection in search zone...")
+        logger.info(f"[VISION] Vision enabled - waiting up to {vision_timeout}s for collar detection...")
 
-        # Wait indefinitely for cone detection
+        # Wait for cone detection with timeout
+        start_time = asyncio.get_event_loop().time()
         while not getattr(self, "cone_detected_for_current_wp", False):
             if self.shutdown_requested:
                 return False
 
+            # Check timeout
+            elapsed = asyncio.get_event_loop().time() - start_time
+            if elapsed >= vision_timeout:
+                logger.warning(f"[VISION] Timeout after {vision_timeout}s - no collar detected, proceeding to CSV waypoint")
+                return True
+
             await asyncio.sleep(0.1)
 
-        # logger.info("[VISION] Cone detected in search zone - proceeding to cone")
+        logger.info("[VISION] Collar detected in search zone - proceeding to refined position")
         return True
 
     def get_user_choice(self) -> str:
@@ -394,6 +421,8 @@ class NavigationManager:
     async def wait_for_track_completion(self, timeout: float = 60.0) -> bool:
         """Wait for track to complete or fail."""
         logger.info(f"Waiting for track completion (timeout: {timeout}s)...")
+        logger.info(f"[TRACK DEBUG] Current track status before wait: {TrackStatusEnum.Name(self.current_track_status) if self.current_track_status is not None else 'None'}")
+        logger.info(f"[TRACK DEBUG] Monitor task running: {self.monitor_task is not None and not self.monitor_task.done() if self.monitor_task else 'No monitor task'}")
 
         try:
             done, pending = await asyncio.wait(
@@ -410,15 +439,20 @@ class NavigationManager:
 
             if not done:
                 logger.warning("Timeout waiting for track completion")
+                logger.warning(f"[TRACK DEBUG] Final track status after timeout: {TrackStatusEnum.Name(self.current_track_status) if self.current_track_status is not None else 'None'}")
+                logger.warning(f"[TRACK DEBUG] Monitor task still alive: {not self.monitor_task.done() if self.monitor_task else 'No monitor task'}")
                 return False
 
             if self.track_complete_event.is_set():
+                logger.info("[TRACK DEBUG] Track completed successfully")
                 return True
             elif self.track_failed_event.is_set():
+                logger.warning("[TRACK DEBUG] Track failed")
                 return False
 
         except Exception as e:
             logger.error(f"ERROR: waiting for track completion: {e}")
+            logger.error(f"[TRACK DEBUG] Exception traceback:", exc_info=True)
             return False
 
         return False
@@ -532,22 +566,49 @@ class NavigationManager:
                 self.actuator_deploying = True
 
                 try:
-                    # 1) wait briefly
+                    # 1) Wait briefly after parking
+                    logger.info("[DEPLOY DEBUG] Starting post-actions, waiting 2s...")
                     await asyncio.sleep(2.0)
 
-                    # 2) Deploy plumbob (tool already over hole)
-                    await trigger_dipbob("can0")
-                    # logger.info("Deploying dipbob")
-                    await asyncio.sleep(7.0)  # TODO: swap for measurement await
+                    # 2) Perform hole alignment with oak0 (downward-facing camera)
+                    if self.hole_alignment_enabled:
+                        logger.info("[HOLE ALIGN] Starting fine alignment using oak0 camera...")
+                        alignment_success = await align_with_oak0(
+                            canbus_client=self.canbus_client,
+                            model_path=self.hole_alignment_model_path,
+                            tolerance_px=self.hole_alignment_tolerance_px,
+                            move_gain=self.hole_alignment_move_gain,
+                            derivative_gain=self.hole_alignment_derivative_gain,
+                            max_velocity=self.hole_alignment_max_velocity,
+                            timeout_seconds=self.hole_alignment_timeout,
+                        )
 
-                    # 3) Move forward so robot origin is over the hole
+                        if alignment_success:
+                            logger.info("[HOLE ALIGN] ✓ Hole alignment completed successfully")
+                        else:
+                            logger.warning("[HOLE ALIGN] ⚠ Hole alignment failed or timed out, proceeding anyway...")
+                    else:
+                        logger.info("[HOLE ALIGN] Hole alignment disabled, skipping...")
+
+                    # 3) Deploy plumbob (tool should now be perfectly aligned over hole)
+                    logger.info("[DEPLOY DEBUG] Calling trigger_dipbob...")
+                    try:
+                        await trigger_dipbob("can0", timeout=5.0)
+                        logger.info("[DEPLOY DEBUG] Dipbob triggered successfully")
+                        await asyncio.sleep(7.0)  # TODO: swap for measurement await
+                    except asyncio.TimeoutError:
+                        logger.warning("[DEPLOY DEBUG] Dipbob timeout - device may be unplugged, continuing anyway...")
+                    except Exception as e:
+                        logger.warning(f"[DEPLOY DEBUG] Dipbob error: {e}, continuing anyway...")
+
+                    # 4) Move forward so robot origin is over the hole
                     origin_track = await self.motion_planner.create_tool_to_origin_segment()
                     ok2 = await self.execute_single_track(origin_track, timeout=15.0, do_post_actions=False)
                     if not ok2:
                         logger.warning("tool→origin micro-segment failed; skipping chute pulse")
                         return success  # don't open chute if failed
 
-                    # 4) Open/close chute
+                    # 5) Open/close chute
                     await self.actuator.pulse_sequence(
                         open_seconds=self.actuator_open_seconds,
                         close_seconds=self.actuator_close_seconds,

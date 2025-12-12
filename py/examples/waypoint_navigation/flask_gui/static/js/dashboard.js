@@ -559,16 +559,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // Initialize waypoint plot
     initializePlot();
 
-    // Initialize detection scatter plot
-    initializeDetectionPlot();
+    // Initialize detection scatter plot (only if container exists)
+    const detectionContainer = document.getElementById('detection-plot-container');
+    if (detectionContainer) {
+        initializeDetectionPlot();
+        // Fetch detection data every second
+        setInterval(fetchDetectionData, 1000);
+        fetchDetectionData();
+    }
 
     // Fetch plot data every second
     setInterval(fetchPlotData, 1000);
     fetchPlotData();
-
-    // Fetch detection data every second
-    setInterval(fetchDetectionData, 1000);
-    fetchDetectionData();
 
     // Initial log
     addLog('Dashboard loaded', 'info');

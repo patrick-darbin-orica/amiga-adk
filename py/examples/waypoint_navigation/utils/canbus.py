@@ -36,15 +36,26 @@ def eff_id(arb29: int) -> int:
         raise ValueError(f"ID {arb29:#x} exceeds 29 bits")
     return CAN_EFF_FLAG | arb29
 
-async def _send_sig(client, arb29: int, payload: bytes) -> None:
+async def _send_sig(client, arb29: int, payload: bytes, timeout: float = 5.0) -> None:
     msg = RawCanbusMessage()
     msg.id = eff_id(arb29)               # <-- set extended flag here
     msg.remote_transmission = False      # RTR=0 (data frame)
     msg.error = False
     msg.data = payload                   # 8 bytes
-    await client.request_reply("/can_message", msg, decode=True)
+    await asyncio.wait_for(client.request_reply("/can_message", msg, decode=True), timeout=timeout)
 
-async def trigger_dipbob(service_config_path: str = "can0") -> None:
+async def trigger_dipbob(service_config_path: str = "can0", timeout: float = 5.0) -> None:
+    """Trigger the dipbob deployment.
+
+    Args:
+        service_config_path: Path to canbus config or "can0" to use default
+        timeout: Timeout in seconds for CAN message (default 5.0)
+
+    Raises:
+        asyncio.TimeoutError: If the CAN message times out (device may be unplugged)
+    """
+    logger = logging.getLogger(__name__)
+
     # If the argument isn't a JSON path, fall back to your default config
     cfg_path = Path(service_config_path)
     if cfg_path.suffix.lower() != ".json":
@@ -53,10 +64,19 @@ async def trigger_dipbob(service_config_path: str = "can0") -> None:
     cfg: EventServiceConfig = proto_from_json_file(cfg_path, EventServiceConfig())
     client = EventClient(cfg)
 
-    await _send_sig(client, 0x18FF0007, b"\x06\x00\x02\x00\x00\x00\x00\x00")
-    await asyncio.sleep(0.02)
-    # Whie pressing button A sends both sigs, this sometimes triggers two drops of the dipper.
-    # await _send_sig(client, 0x18FF0007, b"\x07\x00\x02\x00\x00\x00\x00\x00")
+    try:
+        logger.info(f"[DIPBOB] Sending trigger signal (timeout: {timeout}s)...")
+        await _send_sig(client, 0x18FF0007, b"\x06\x00\x02\x00\x00\x00\x00\x00", timeout=timeout)
+        await asyncio.sleep(0.02)
+        logger.info("[DIPBOB] Dipbob trigger signal sent successfully")
+        # Whie pressing button A sends both sigs, this sometimes triggers two drops of the dipper.
+        # await _send_sig(client, 0x18FF0007, b"\x07\x00\x02\x00\x00\x00\x00\x00")
+    except asyncio.TimeoutError:
+        logger.error(f"[DIPBOB] Timeout after {timeout}s - dipbob device may be unplugged or unresponsive")
+        raise
+    except Exception as e:
+        logger.error(f"[DIPBOB] Error sending trigger signal: {e}")
+        raise
 
 
 async def check_filter_convergence(filter_client: EventClient, timeout: float = 5.0) -> bool:

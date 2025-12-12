@@ -1,5 +1,5 @@
 #!/bin/bash
-source ~/farm-ng-amiga/venv/bin/activate
+source ~/Amiga/venv/bin/activate
 
 echo "Detection script executed in headless mode (no matplotlib display)"
 echo "Running with lower priority (nice +10) to avoid CAN bus starvation"

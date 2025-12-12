@@ -413,6 +413,13 @@ async def main(args) -> None:
             no_stop=args.no_stop,
             canbus_client=canbus_client,
             actuator=actuator,
+            # Hole alignment configuration
+            hole_alignment_enabled=args.hole_alignment_enabled and not args.no_hole_alignment,
+            hole_alignment_model_path=args.hole_alignment_model,
+            hole_alignment_tolerance_px=args.hole_alignment_tolerance,
+            hole_alignment_move_gain=args.hole_alignment_gain,
+            hole_alignment_max_velocity=args.hole_alignment_max_velocity,
+            hole_alignment_timeout=args.hole_alignment_timeout,
         )
 
         asyncio.create_task(
@@ -566,6 +573,43 @@ if __name__ == "__main__":
                         default=1,
                         help="After last hole, perform row-end sequence to drive back to start (0=disabled, 1=enabled, default: 1)"
     )
+
+    # Hole alignment configuration
+    parser.add_argument("--hole-alignment-enabled",
+                        action="store_true",
+                        default=True,
+                        help="Enable fine hole alignment using oak0 downward-facing camera (default: enabled)"
+    )
+    parser.add_argument("--no-hole-alignment",
+                        action="store_true",
+                        help="Disable hole alignment (overrides --hole-alignment-enabled)"
+    )
+    parser.add_argument("--hole-alignment-model",
+                        type=Path,
+                        default=None,
+                        help="Path to YOLO model for hole detection (default: detection/best.engine)"
+    )
+    parser.add_argument("--hole-alignment-tolerance",
+                        type=int,
+                        default=40,
+                        help="Alignment tolerance in pixels (default: 40)"
+    )
+    parser.add_argument("--hole-alignment-gain",
+                        type=float,
+                        default=0.001,
+                        help="Proportional gain for alignment (default: 0.001)"
+    )
+    parser.add_argument("--hole-alignment-max-velocity",
+                        type=float,
+                        default=0.15,
+                        help="Maximum velocity during alignment in m/s (default: 0.15)"
+    )
+    parser.add_argument("--hole-alignment-timeout",
+                        type=float,
+                        default=30.0,
+                        help="Timeout for hole alignment in seconds (default: 30.0)"
+    )
+
     parser.add_argument("--config",
                         type=Path,
                         required=True,

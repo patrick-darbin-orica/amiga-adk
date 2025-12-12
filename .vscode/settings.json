@@ -16,6 +16,9 @@
 	"python.testing.unittestEnabled": false,
 	"python.testing.pytestEnabled": true,
 	"python.testing.pytestArgs": [],
-	"python.defaultInterpreterPath": "/home/farm-ng-user-patrick-orica/farm-ng-amiga/venv/bin/python",
-	"python.terminal.activateEnvironment": true
+	"python.defaultInterpreterPath": "/mnt/managed_home/farm-ng-user-patrick-orica/Amiga/venv/bin/python",
+	"python.terminal.activateEnvironment": true,
+	"cSpell.words": [
+		"preexec"
+	]
 }

@@ -44,15 +44,15 @@ from imu_tilt_compensation import IMUTiltCompensation
 # ---------------- Model / rates ----------------
 # MODEL_PATH = Path(__file__).parent / "collarDetectionV2.engine"
 # MODEL_PATH = Path(__file__).parent / "White_Barrel.onnx"
-# MODEL_PATH = Path(__file__).parent / "yoloe-11s-seg-pf.pt"
+# MODEL_PATH = Path(__file__).parent / "yoloe-11s-seg.pt"
 # MODEL_PATH = Path(__file__).parent / "yoloe-11s-seg.engine"
-MODEL_PATH = Path(__file__).parent / "best.pt"
-CONF_THRESHOLD = 0.3
+MODEL_PATH = Path(__file__).parent / "best1.engine"  # Using ONNX with GPU for 3-5x speedup
+CONF_THRESHOLD = 0.5
 IOU_THRESHOLD = 0.5
 IMG_SIZE = 640
 
-FPS = 10  # Reduced from 15 to further limit CPU usage
-YOLO_PROCESS_EVERY_N_FRAMES = 2  # Only run YOLO inference every Nth frame (reduces CPU by ~50%)
+FPS = 15  # Reduced from 15 to further limit CPU usage
+YOLO_PROCESS_EVERY_N_FRAMES = 5  # Only run YOLO inference every Nth frame (reduces CPU by ~50%)
 
 # ---------------- Camera / FOV ----------------
 USE_RGB_FOV     = True
@@ -85,6 +85,7 @@ _last = (0.0, 0.0, 0.0)
 N_UP_CAM = np.array([0.0, -math.cos(theta), -math.sin(theta)], dtype=float)
 N_UP_CAM /= (np.linalg.norm(N_UP_CAM) + 1e-9)
 
+
 def get_current_up_vector():
     """Get current up vector from IMU compensator or default."""
     return imu_compensator.get_up_vector_camera_frame()
@@ -105,8 +106,8 @@ WAYPOINT_Y_M =  0.35
 WAYPOINT_Z_M =  2.32
 
 # OPTIONAL: lock to a specific device (MxID or name). Leave as "" to use default device.
-TARGET_DEVICE  = "14442C1001A528D700"  # or ""
-# TARGET_DEVICE = "184430100194630E00"
+# TARGET_DEVICE  = "14442C1001A528D700"  # or ""
+TARGET_DEVICE = "184430100194630E00"
 
 # Depth filtering
 DEPTH_LOWER_MM = 100
@@ -191,10 +192,9 @@ class HostYOLODetector:
                 conf = float(box.conf[0])
                 cls_id = int(box.cls[0])
 
-                # Only keep class 0 detections (from visual prompting)
-                # FILTER DISABLED - accepting all classes
-                # if cls_id != 0:
-                #     continue
+                # Only keep class 0 detections (collar class from custom training)
+                if cls_id != 0:
+                    continue
 
                 # Handle class name safely
                 if cls_id in self.class_names:
@@ -899,6 +899,14 @@ if not MODEL_PATH.exists():
 detector = HostYOLODetector(MODEL_PATH, conf=CONF_THRESHOLD, iou=IOU_THRESHOLD)
 print(f"✓ Loaded YOLO model with {len(detector.class_names)} classes")
 
+# Create vision_running flag file to signal navigation system
+VISION_FLAG_FILE = Path(__file__).parent.parent / ".vision_running"
+try:
+    VISION_FLAG_FILE.touch()
+    print(f"✓ Created vision flag: {VISION_FLAG_FILE}")
+except Exception as e:
+    print(f"⚠️  Could not create vision flag: {e}")
+
 # Create pipeline
 pipeline, qRgb, qDepth, qImu, device = create_pipeline()
 
@@ -1180,6 +1188,14 @@ with pipeline:
     except KeyboardInterrupt:
         print("\nInterrupted by user (Ctrl+C)")
     finally:
+        # Remove vision_running flag file
+        try:
+            if VISION_FLAG_FILE.exists():
+                VISION_FLAG_FILE.unlink()
+                print(f"✓ Removed vision flag: {VISION_FLAG_FILE}")
+        except Exception as e:
+            print(f"⚠️  Could not remove vision flag: {e}")
+
         cv2.destroyAllWindows()
         plt.ioff()
         # Only close figure if vis exists and has a figure

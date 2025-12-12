@@ -14,6 +14,10 @@ from typing import Optional
 
 # Shared frame file location for oak0
 FRAME_FILE_OAK0 = Path("/tmp/amiga_oak0_frame.jpg")
+
+# Flag file to indicate inference is running (prevents Flask from overwriting processed frames)
+INFERENCE_ACTIVE_FLAG = Path("/tmp/amiga_oak0_inference_active")
+
 _frame_lock = threading.Lock()
 
 
@@ -80,3 +84,35 @@ def get_oak0_frame_bytes() -> Optional[bytes]:
             return f.read()
     except Exception:
         return None
+
+
+def set_inference_active(active: bool) -> None:
+    """
+    Set or clear the inference active flag.
+
+    When inference is active, the Flask GUI's oak0 camera updater will NOT overwrite
+    the processed frames with raw camera feed.
+
+    Args:
+        active: True to signal inference is running, False to clear the flag
+    """
+    try:
+        if active:
+            # Create flag file
+            INFERENCE_ACTIVE_FLAG.touch()
+        else:
+            # Remove flag file
+            if INFERENCE_ACTIVE_FLAG.exists():
+                INFERENCE_ACTIVE_FLAG.unlink()
+    except Exception:
+        pass  # Silently fail
+
+
+def is_inference_active() -> bool:
+    """
+    Check if inference is currently active.
+
+    Returns:
+        True if inference is running (Flask should not overwrite frames)
+    """
+    return INFERENCE_ACTIVE_FLAG.exists()
