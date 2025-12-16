@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """
-Shared camera frame cache for oak0 camera (farm-ng camera service).
+Shared camera frame cache for oak2 camera (downward-facing alignment camera).
 
-Provides inter-process communication between oak0 camera stream and Flask GUI.
+Provides inter-process communication between oak2 camera stream and Flask GUI.
 Uses file-based shared memory for efficient frame transfer.
 """
 
@@ -12,11 +12,11 @@ import threading
 from pathlib import Path
 from typing import Optional
 
-# Shared frame file location for oak0
-FRAME_FILE_OAK0 = Path("/tmp/amiga_oak0_frame.jpg")
+# Shared frame file location for oak2
+FRAME_FILE_OAK2 = Path("/tmp/amiga_oak2_frame.jpg")
 
 # Flag file to indicate inference is running (prevents Flask from overwriting processed frames)
-INFERENCE_ACTIVE_FLAG = Path("/tmp/amiga_oak0_inference_active")
+INFERENCE_ACTIVE_FLAG = Path("/tmp/amiga_oak2_inference_active")
 
 # Flag file to control hole alignment behavior
 ALIGNMENT_ENABLED_FLAG = Path("/tmp/amiga_alignment_enabled")
@@ -24,9 +24,9 @@ ALIGNMENT_ENABLED_FLAG = Path("/tmp/amiga_alignment_enabled")
 _frame_lock = threading.Lock()
 
 
-def set_oak0_frame(frame: np.ndarray) -> None:
+def set_oak2_frame(frame: np.ndarray) -> None:
     """
-    Set the latest oak0 camera frame by writing to shared file (thread-safe, inter-process).
+    Set the latest oak2 camera frame by writing to shared file (thread-safe, inter-process).
 
     Args:
         frame: OpenCV BGR image (numpy array)
@@ -40,29 +40,29 @@ def set_oak0_frame(frame: np.ndarray) -> None:
             _, buffer = cv2.imencode('.jpg', frame, [cv2.IMWRITE_JPEG_QUALITY, 70])
 
             # Write atomically using temp file + rename
-            temp_file = FRAME_FILE_OAK0.with_suffix('.tmp')
+            temp_file = FRAME_FILE_OAK2.with_suffix('.tmp')
             with open(temp_file, 'wb') as f:
                 f.write(buffer.tobytes())
-            temp_file.replace(FRAME_FILE_OAK0)
+            temp_file.replace(FRAME_FILE_OAK2)
         except Exception as e:
             # Silently fail to avoid disrupting camera processing
             pass
 
 
-def get_oak0_frame() -> Optional[np.ndarray]:
+def get_oak2_frame() -> Optional[np.ndarray]:
     """
-    Get the latest oak0 camera frame by reading from shared file (thread-safe, inter-process).
+    Get the latest oak2 camera frame by reading from shared file (thread-safe, inter-process).
 
     Returns:
         OpenCV BGR image (numpy array) or None if no frame available
     """
     with _frame_lock:
         try:
-            if not FRAME_FILE_OAK0.exists():
+            if not FRAME_FILE_OAK2.exists():
                 return None
 
             # Read JPEG file
-            with open(FRAME_FILE_OAK0, 'rb') as f:
+            with open(FRAME_FILE_OAK2, 'rb') as f:
                 buffer = f.read()
 
             # Decode JPEG
@@ -72,18 +72,18 @@ def get_oak0_frame() -> Optional[np.ndarray]:
             return None
 
 
-def get_oak0_frame_bytes() -> Optional[bytes]:
+def get_oak2_frame_bytes() -> Optional[bytes]:
     """
-    Get the latest oak0 camera frame as JPEG bytes (optimized for Flask streaming).
+    Get the latest oak2 camera frame as JPEG bytes (optimized for Flask streaming).
 
     Returns:
         JPEG bytes or None if no frame available
     """
     try:
-        if not FRAME_FILE_OAK0.exists():
+        if not FRAME_FILE_OAK2.exists():
             return None
 
-        with open(FRAME_FILE_OAK0, 'rb') as f:
+        with open(FRAME_FILE_OAK2, 'rb') as f:
             return f.read()
     except Exception:
         return None
@@ -93,7 +93,7 @@ def set_inference_active(active: bool) -> None:
     """
     Set or clear the inference active flag.
 
-    When inference is active, the Flask GUI's oak0 camera updater will NOT overwrite
+    When inference is active, the Flask GUI's oak2 camera updater will NOT overwrite
     the processed frames with raw camera feed.
 
     Args:

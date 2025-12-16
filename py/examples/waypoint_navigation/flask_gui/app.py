@@ -22,7 +22,7 @@ sys.path.append(str(Path(__file__).resolve().parents[1]))
 from utils.pose_cache import get_latest_pose, set_latest_pose
 from utils.navigation_state import get_navigation_state, get_waypoint_status
 from utils.camera_frame_cache import get_latest_frame_bytes
-from utils.oak0_camera_cache import get_oak0_frame_bytes, set_oak0_frame, is_inference_active
+from utils.oak2_camera_cache import get_oak2_frame_bytes, set_oak2_frame, is_inference_active
 
 # Import filter client dependencies
 from farm_ng.core.event_client import EventClient
@@ -88,19 +88,19 @@ def video_feed():
 @app.route('/video_feed_2')
 def video_feed_2():
     """
-    Stream oak0 mono camera feed (farm-ng camera service).
-    Reads the latest frame from oak0 camera via shared camera frame file.
+    Stream oak2 mono camera feed (downward-facing alignment camera).
+    Reads the latest frame from oak2 camera via shared camera frame file.
     Uses mono (left camera) for better performance (1 channel vs 3 for RGB).
     """
     def generate():
         while True:
-            frame_bytes = get_oak0_frame_bytes()
+            frame_bytes = get_oak2_frame_bytes()
             if frame_bytes is not None:
                 try:
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + frame_bytes + b'\r\n')
                 except Exception as e:
-                    print(f"Error streaming oak0 frame: {e}")
+                    print(f"Error streaming oak2 frame: {e}")
             time.sleep(1/10)  # 10 FPS for better performance
 
     return Response(generate(), mimetype='multipart/x-mixed-replace; boundary=frame')
@@ -198,10 +198,10 @@ def camera_diagnostics():
             'cache_file': '/tmp/amiga_camera_frame.jpg',
             'status': 'active' if Path('/tmp/amiga_camera_frame.jpg').exists() else 'no_frames'
         },
-        'oak0_feed': {
-            'source': 'oak0 camera service (gRPC)',
-            'cache_file': '/tmp/amiga_oak0_frame.jpg',
-            'status': 'active' if Path('/tmp/amiga_oak0_frame.jpg').exists() else 'no_frames',
+        'oak2_feed': {
+            'source': 'oak2 alignment service (DepthAI)',
+            'cache_file': '/tmp/amiga_oak2_frame.jpg',
+            'status': 'active' if Path('/tmp/amiga_oak2_frame.jpg').exists() else 'no_frames',
             'subscription_config': {
                 'every_n': 5,
                 'host': 'localhost',
@@ -211,13 +211,13 @@ def camera_diagnostics():
     }
 
     # Check frame freshness (if file exists, check modification time)
-    oak0_cache = Path('/tmp/amiga_oak0_frame.jpg')
-    if oak0_cache.exists():
-        age_seconds = time.time() - oak0_cache.stat().st_mtime
-        diagnostics['oak0_feed']['frame_age_seconds'] = round(age_seconds, 2)
+    oak2_cache = Path('/tmp/amiga_oak2_frame.jpg')
+    if oak2_cache.exists():
+        age_seconds = time.time() - oak2_cache.stat().st_mtime
+        diagnostics['oak2_feed']['frame_age_seconds'] = round(age_seconds, 2)
         if age_seconds > 2.0:
-            diagnostics['oak0_feed']['status'] = 'stale'
-            diagnostics['oak0_feed']['warning'] = 'Frames not updating (possible gRPC overload or service down)'
+            diagnostics['oak2_feed']['status'] = 'stale'
+            diagnostics['oak2_feed']['warning'] = 'Frames not updating (alignment service may be down)'
 
     oak1_cache = Path('/tmp/amiga_camera_frame.jpg')
     if oak1_cache.exists():
@@ -529,7 +529,7 @@ async def oak0_camera_updater():
                         if cache_exists:
                             cache_age = current_time - os.path.getmtime('/tmp/amiga_oak0_frame.jpg')
                         effective_fps = fps / PROCESS_EVERY_N_FRAMES
-                        print(f"📊 oak0 camera: {fps:.1f} FPS received, {effective_fps:.1f} FPS processed, cache: {'OK' if cache_age < 2 else 'STALE'}")
+                        print(f"📊 oak0 camera (gRPC): {fps:.1f} FPS received, {effective_fps:.1f} FPS processed, cache: {'OK' if cache_age < 2 else 'STALE'}")
                         frame_count = 0
                         last_report_time = current_time
 
@@ -672,22 +672,27 @@ if __name__ == '__main__':
 
     # Start background oak0 camera updater
     # NOTE: Using SelectorEventLoop to prevent Python 3.8 gRPC BlockingIOError issues
-    try:
-        oak0_config_path = Path(__file__).resolve().parents[2] / 'camera_client' / 'service_config.json'
-        if oak0_config_path.exists():
-            # Suppress gRPC asyncio warnings (now using SelectorEventLoop to prevent them)
-            import logging
-            logging.getLogger('asyncio').setLevel(logging.CRITICAL)
+    # NOTE: oak0 gRPC camera subscription disabled - using oak2 alignment service instead
+    # The oak2 alignment service writes frames directly to /tmp/amiga_oak2_frame.jpg
+    print("ℹ️  oak0 gRPC camera subscription disabled (using oak2 alignment service for Camera Feed 2)")
 
-            oak0_camera_thread = threading.Thread(target=run_async_oak0_camera_updater, daemon=True)
-            oak0_camera_thread.start()
-            print("✓ Started oak0 camera feed thread (using SelectorEventLoop for gRPC compatibility)")
-        else:
-            print("⚠️  oak0 camera service config not found - Camera Feed 2 disabled")
-    except Exception as e:
-        print(f"⚠️  Could not start oak0 camera thread: {e}")
-        import traceback
-        traceback.print_exc()
+    # Uncomment below to re-enable oak0 gRPC subscription if needed:
+    # try:
+    #     oak0_config_path = Path(__file__).resolve().parents[2] / 'camera_client' / 'service_config.json'
+    #     if oak0_config_path.exists():
+    #         # Suppress gRPC asyncio warnings (now using SelectorEventLoop to prevent them)
+    #         import logging
+    #         logging.getLogger('asyncio').setLevel(logging.CRITICAL)
+    #
+    #         oak0_camera_thread = threading.Thread(target=run_async_oak0_camera_updater, daemon=True)
+    #         oak0_camera_thread.start()
+    #         print("✓ Started oak0 camera feed thread (using SelectorEventLoop for gRPC compatibility)")
+    #     else:
+    #         print("⚠️  oak0 camera service config not found - Camera Feed 2 disabled")
+    # except Exception as e:
+    #     print(f"⚠️  Could not start oak0 camera thread: {e}")
+    #     import traceback
+    #     traceback.print_exc()
 
     # Start background status updater
     status_thread = threading.Thread(target=background_status_updater, daemon=True)

@@ -74,7 +74,7 @@ class Oak1AlignmentTester:
         auto_align_at_startup: bool = False,
         img_size: int = 640,
         fps: int = 15,
-        device_id: str = "184430100194630E00",  # oak1 device ID
+        device_id: str = "14442C10D14CFFD600",  # oak2 device ID
     ):
         """
         Initialize the oak1 alignment tester.
@@ -673,8 +673,8 @@ async def main():
     parser.add_argument(
         "--device-id",
         type=str,
-        default="184430100194630E00",
-        help="OAK device MxID (oak1)"
+        default="14442C10D14CFFD600",
+        help="OAK device MxID (oak2)"
     )
 
     # Visualization

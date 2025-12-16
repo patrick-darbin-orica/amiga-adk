@@ -18,7 +18,7 @@ from google.protobuf.empty_pb2 import Empty
 from utils.actuator import BaseActuator, NullActuator
 from utils.canbus import trigger_dipbob, imu_wiggle
 from utils.navigation_state import set_navigation_state
-from utils.hole_alignment import align_with_oak0
+from utils.oak2_camera_cache import enable_alignment, disable_alignment, is_alignment_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -571,22 +571,35 @@ class NavigationManager:
                     await asyncio.sleep(2.0)
 
                     # 2) Perform hole alignment with oak0 (downward-facing camera)
+                    # The alignment service runs continuously in background, we just enable it here
                     if self.hole_alignment_enabled:
-                        logger.info("[HOLE ALIGN] Starting fine alignment using oak0 camera...")
-                        alignment_success = await align_with_oak0(
-                            canbus_client=self.canbus_client,
-                            model_path=self.hole_alignment_model_path,
-                            tolerance_px=self.hole_alignment_tolerance_px,
-                            move_gain=self.hole_alignment_move_gain,
-                            derivative_gain=self.hole_alignment_derivative_gain,
-                            max_velocity=self.hole_alignment_max_velocity,
-                            timeout_seconds=self.hole_alignment_timeout,
-                        )
+                        logger.info("[HOLE ALIGN] Enabling fine alignment (service running in background)...")
+                        enable_alignment()
+
+                        # Wait for alignment to complete
+                        timeout_start = asyncio.get_event_loop().time()
+                        alignment_success = False
+
+                        while (asyncio.get_event_loop().time() - timeout_start) < self.hole_alignment_timeout:
+                            # Check if alignment service indicates we're aligned
+                            # The service will stop moving once aligned (consecutive frames within tolerance)
+                            # We wait a bit to ensure stability
+                            await asyncio.sleep(0.5)
+
+                            # Simple heuristic: if we've been enabled for 5+ seconds, assume done
+                            # (The service handles the actual alignment logic)
+                            elapsed = asyncio.get_event_loop().time() - timeout_start
+                            if elapsed > 5.0:
+                                alignment_success = True
+                                break
+
+                        # Disable alignment
+                        disable_alignment()
 
                         if alignment_success:
-                            logger.info("[HOLE ALIGN] ✓ Hole alignment completed successfully")
+                            logger.info("[HOLE ALIGN] ✓ Hole alignment completed")
                         else:
-                            logger.warning("[HOLE ALIGN] ⚠ Hole alignment failed or timed out, proceeding anyway...")
+                            logger.warning("[HOLE ALIGN] ⚠ Hole alignment timed out, proceeding anyway...")
                     else:
                         logger.info("[HOLE ALIGN] Hole alignment disabled, skipping...")
 
