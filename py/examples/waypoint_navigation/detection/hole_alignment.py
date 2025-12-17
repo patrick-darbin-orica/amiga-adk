@@ -1,23 +1,24 @@
 #!/usr/bin/env python3
 """
-Standalone test script for oak1 collar alignment using visual servoing.
+TESTING ONLY
+Standalone test script for oak2 collar alignment using visual servoing.
 
 This script uses a depthai pipeline (like detectionPlot.py) instead of farm-ng
 framework subscription to access the camera.
 
 This script:
-1. Creates a depthai pipeline for oak1 RGB camera feed (front-facing)
+1. Creates a depthai pipeline for oak2 RGB camera feed (front-facing)
 2. Runs YOLO detection to find collar bounding box
 3. Compares collar center to target reticle position
 4. Sends CAN bus twist commands to align robot forward/backward
 5. Displays real-time visualization with reticle and bbox
 
-Camera orientation: oak1 faces FORWARD
+Camera orientation: oak2 faces FORWARD
 - Collar higher in frame → Robot drives forward (positive velocity)
 - Collar lower in frame → Robot reverses (negative velocity)
 
 Usage:
-    python test_oak1_alignment.py --move-gain 0.001 --tolerance-px 40
+    python test_oak2_alignment.py --move-gain 0.001 --tolerance-px 40
 
 Controls:
     'a' - Enable auto-alignment (sends CAN bus commands)
@@ -55,8 +56,8 @@ except ImportError:
     sys.exit(1)
 
 
-class Oak1AlignmentTester:
-    """Visual servoing alignment tester for oak1 collar detection using depthai pipeline."""
+class oak2AlignmentTester:
+    """Visual servoing alignment tester for oak2 collar detection using depthai pipeline."""
 
     def __init__(
         self,
@@ -75,9 +76,10 @@ class Oak1AlignmentTester:
         img_size: int = 640,
         fps: int = 15,
         device_id: str = "14442C10D14CFFD600",  # oak2 device ID
+        min_scan_height: int = 200,  # Only accept detections from this pixel height and below
     ):
         """
-        Initialize the oak1 alignment tester.
+        Initialize the oak2 alignment tester.
 
         Args:
             model_path: Path to YOLO model (.pt or .engine)
@@ -94,7 +96,8 @@ class Oak1AlignmentTester:
             auto_align_at_startup: Enable auto-alignment at startup
             img_size: Camera image size (640x640)
             fps: Camera frame rate
-            device_id: OAK device MxID (oak1)
+            device_id: OAK device MxID (oak2)
+            min_scan_height: Minimum Y pixel height for detection (only scan from this height and below)
         """
         self.model_path = model_path
         self.canbus_config_path = canbus_config_path
@@ -109,6 +112,7 @@ class Oak1AlignmentTester:
 
         # Detection parameters
         self.conf_threshold = conf_threshold
+        self.min_scan_height = min_scan_height
 
         # Visualization
         self.visualization_scale = visualization_scale
@@ -132,7 +136,7 @@ class Oak1AlignmentTester:
     async def run(self):
         """Main run loop."""
         print(f"\n{'='*70}")
-        print("OAK1 COLLAR ALIGNMENT TESTER (DepthAI Pipeline)")
+        print("oak2 COLLAR ALIGNMENT TESTER (DepthAI Pipeline)")
         print(f"{'='*70}")
         print(f"Model:            {self.model_path}")
         print(f"Device ID:        {self.device_id}")
@@ -171,10 +175,10 @@ class Oak1AlignmentTester:
 
         # Signal Flask GUI that inference is active (use oak0 feed for display)
         set_inference_active(True)
-        print("✓ Inference flag set (Flask will display oak1 frames on oak0 feed)")
+        print("✓ Inference flag set (Flask will display oak2 frames on oak0 feed)")
 
-        # Create depthai pipeline for oak1
-        print("Creating DepthAI pipeline for oak1...")
+        # Create depthai pipeline for oak2
+        print("Creating DepthAI pipeline for oak2...")
         pipeline, xoutRgb = self._create_pipeline()
 
         # Create output queue BEFORE starting pipeline (V3 requirement)
@@ -290,7 +294,7 @@ class Oak1AlignmentTester:
         cv2.destroyAllWindows()
 
     def _create_pipeline(self):
-        """Create OAK-D pipeline for oak1 RGB camera (DepthAI V3 API)."""
+        """Create OAK-D pipeline for oak2 RGB camera (DepthAI V3 API)."""
         # Create pipeline for specific device
         device = dai.Device(self.device_id)
         pipeline = dai.Pipeline(device)
@@ -316,7 +320,7 @@ class Oak1AlignmentTester:
             imgsz=self.img_size
         )
 
-        # Extract detections - filter to ONLY class 0 (Collar)
+        # Extract detections - filter to ONLY class 0 (Collar) AND below min_scan_height
         detections = []
         if len(results) > 0 and results[0].boxes is not None:
             boxes = results[0].boxes
@@ -327,6 +331,11 @@ class Oak1AlignmentTester:
 
                 conf = float(boxes.conf[i])
                 xyxy = boxes.xyxy[i].cpu().numpy()
+
+                # Filter: only keep detections where the center Y is at or below min_scan_height
+                center_y = (xyxy[1] + xyxy[3]) / 2
+                if center_y < self.min_scan_height:
+                    continue  # Skip detections above the minimum scan height
 
                 detections.append({
                     'confidence': conf,
@@ -368,7 +377,7 @@ class Oak1AlignmentTester:
             # Update last offset for next iteration
             self.last_offset_y = offset_y
 
-            # Calculate velocity command with derivative damping (oak1 faces FORWARD!)
+            # Calculate velocity command with derivative damping (oak2 faces FORWARD!)
             # Forward-facing camera: Positive offset_y (collar lower) → forward velocity (positive)
             # Negative offset_y (collar higher) → reverse velocity (negative)
             proportional_term = offset_y * self.move_gain  # Positive for forward-facing
@@ -424,8 +433,8 @@ class Oak1AlignmentTester:
 
         # Display locally only if not headless
         if not self.headless:
-            cv2.namedWindow("oak1 Alignment Test", cv2.WINDOW_NORMAL)
-            cv2.imshow("oak1 Alignment Test", vis_frame)
+            cv2.namedWindow("oak2 Alignment Test", cv2.WINDOW_NORMAL)
+            cv2.imshow("oak2 Alignment Test", vis_frame)
 
     def _create_visualization_frame(self, image: np.ndarray, detections: list, offset_y: float, is_aligned: bool, velocity_cmd: float, fps: float = 0.0):
         """Create visualization frame with detection overlay."""
@@ -437,6 +446,24 @@ class Oak1AlignmentTester:
         fps_text = f"FPS: {fps:.1f} | Frame #{self.frame_count}"
         cv2.putText(vis_image, fps_text, (10, 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
+
+        # Draw scan region boundary
+        cv2.line(
+            vis_image,
+            (0, self.min_scan_height),
+            (vis_image.shape[1], self.min_scan_height),
+            (255, 0, 0),  # Blue line
+            2
+        )
+        cv2.putText(
+            vis_image,
+            "SCAN REGION BELOW",
+            (10, self.min_scan_height - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 0, 0),
+            2
+        )
 
         # Draw target reticle (crosshair)
         reticle_color = (0, 255, 0) if is_aligned else (0, 165, 255)  # Green if aligned, orange otherwise
@@ -592,7 +619,7 @@ class Oak1AlignmentTester:
 
 async def main():
     parser = argparse.ArgumentParser(
-        description="Test oak1 visual servoing alignment with YOLO collar detection (DepthAI pipeline)"
+        description="Test oak2 visual servoing alignment with YOLO collar detection (DepthAI pipeline)"
     )
 
     # Model config
@@ -656,6 +683,12 @@ async def main():
         default=0.5,
         help="YOLO confidence threshold"
     )
+    parser.add_argument(
+        "--min-scan-height",
+        type=int,
+        default=200,
+        help="Minimum Y pixel height for detection (only scan from this height and below)"
+    )
 
     # Camera parameters
     parser.add_argument(
@@ -699,7 +732,7 @@ async def main():
     args = parser.parse_args()
 
     # Create tester
-    tester = Oak1AlignmentTester(
+    tester = oak2AlignmentTester(
         model_path=args.model_path,
         canbus_config_path=args.canbus_config,
         target_reticle_x=args.target_x,
@@ -715,6 +748,7 @@ async def main():
         img_size=args.img_size,
         fps=args.fps,
         device_id=args.device_id,
+        min_scan_height=args.min_scan_height,
     )
 
     # Run

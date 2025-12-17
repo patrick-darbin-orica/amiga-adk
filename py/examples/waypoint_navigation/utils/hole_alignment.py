@@ -75,6 +75,7 @@ class ContinuousAlignmentService:
         min_detections_required: int = 3,
         img_size: int = 640,
         fps: int = 15,
+        min_scan_height: int = 200,  # Only accept detections from this pixel height and below
     ):
         """
         Initialize continuous alignment service.
@@ -93,6 +94,7 @@ class ContinuousAlignmentService:
             min_detections_required: Minimum consecutive aligned detections
             img_size: Camera image size (640x640)
             fps: Camera frame rate
+            min_scan_height: Minimum Y pixel height for detection (only scan from this height and below)
         """
         self.canbus_client = canbus_client
         self.model_path = model_path
@@ -113,6 +115,7 @@ class ContinuousAlignmentService:
         # Detection parameters
         self.conf_threshold = conf_threshold
         self.min_detections_required = min_detections_required
+        self.min_scan_height = min_scan_height
 
         # State
         self.desired_velocity = 0.0
@@ -255,7 +258,7 @@ class ContinuousAlignmentService:
             imgsz=self.img_size
         )
 
-        # Extract collar detections (class 0 only)
+        # Extract collar detections (class 0 only) AND below min_scan_height
         detections = []
         if len(results) > 0 and results[0].boxes is not None:
             boxes = results[0].boxes
@@ -266,6 +269,12 @@ class ContinuousAlignmentService:
 
                 conf = float(boxes.conf[i])
                 xyxy = boxes.xyxy[i].cpu().numpy()
+
+                # Filter: only keep detections where the center Y is at or below min_scan_height
+                center_y = (xyxy[1] + xyxy[3]) / 2
+                if center_y < self.min_scan_height:
+                    continue  # Skip detections above the minimum scan height
+
                 detections.append({'confidence': conf, 'bbox': xyxy})
 
         # Update stats
@@ -354,6 +363,24 @@ class ContinuousAlignmentService:
         cv2.putText(vis_image, f"FPS: {fps:.1f} | {align_status}", (10, 30),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
 
+        # Draw scan region boundary
+        cv2.line(
+            vis_image,
+            (0, self.min_scan_height),
+            (vis_image.shape[1], self.min_scan_height),
+            (255, 0, 0),  # Blue line
+            2
+        )
+        cv2.putText(
+            vis_image,
+            "SCAN REGION BELOW",
+            (10, self.min_scan_height - 10),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.6,
+            (255, 0, 0),
+            2
+        )
+
         # Draw target reticle
         reticle_color = (0, 255, 0) if is_aligned else (0, 165, 255)
         reticle_size = 30
@@ -414,16 +441,19 @@ class ContinuousAlignmentService:
         return vis_image
 
     async def _twist_command_sender(self):
-        """Background task that sends twist commands at 20 Hz."""
+        """Background task that sends twist commands at 20 Hz when alignment is enabled."""
         logger.info("[ALIGN SERVICE] Twist sender started (20 Hz)")
         while True:
             try:
-                twist = Twist2d()
-                twist.linear_velocity_x = self.desired_velocity
-                twist.linear_velocity_y = 0.0
-                twist.angular_velocity = 0.0
+                # Only send commands if alignment is enabled
+                if is_alignment_enabled():
+                    twist = Twist2d()
+                    twist.linear_velocity_x = self.desired_velocity
+                    twist.linear_velocity_y = 0.0
+                    twist.angular_velocity = 0.0
 
-                await self.canbus_client.request_reply("/twist", twist)
+                    await self.canbus_client.request_reply("/twist", twist)
+
                 await asyncio.sleep(0.05)  # 20 Hz
             except asyncio.CancelledError:
                 break
@@ -482,19 +512,19 @@ async def main():
     parser.add_argument(
         "--target-x",
         type=int,
-        default=958,
+        default=330,
         help="Target reticle X position"
     )
     parser.add_argument(
         "--target-y",
         type=int,
-        default=931,
+        default=260,
         help="Target reticle Y position"
     )
     parser.add_argument(
         "--tolerance-px",
         type=int,
-        default=40,
+        default=15,
         help="Alignment tolerance (pixels)"
     )
     parser.add_argument(
@@ -518,8 +548,14 @@ async def main():
     parser.add_argument(
         "--conf",
         type=float,
-        default=0.3,
+        default=0.5,
         help="YOLO confidence threshold"
+    )
+    parser.add_argument(
+        "--min-scan-height",
+        type=int,
+        default=100,
+        help="Minimum Y pixel height for detection (only scan from this height and below)"
     )
 
     args = parser.parse_args()
@@ -552,6 +588,7 @@ async def main():
         max_velocity=args.max_velocity,
         conf_threshold=args.conf,
         img_size=args.img_size,
+        min_scan_height=args.min_scan_height,
     )
 
     if await service.setup():

@@ -42,9 +42,10 @@ MAIN_CMD="python main.py \
  --waypoints-path ./surveyed-waypoints/deerPark.csv \
  --last-row-waypoint-index 3 \
  --turn-direction left \
- --row-spacing 5.8 \
- --headland-buffer 1.5 \
+ --row-spacing 6.0 \
+ --headland-buffer 1.8 \
  --actuator-id 0 --actuator-rate-hz 5.0" 
+  
 
 if [ "$SKIP_ALIGNMENT" = true ]; then
     MAIN_CMD="$MAIN_CMD --no-hole-alignment"

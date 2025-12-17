@@ -591,8 +591,8 @@ if __name__ == "__main__":
     )
     parser.add_argument("--hole-alignment-tolerance",
                         type=int,
-                        default=40,
-                        help="Alignment tolerance in pixels (default: 40)"
+                        default=15,
+                        help="Alignment tolerance in pixels (default: 15)"
     )
     parser.add_argument("--hole-alignment-gain",
                         type=float,

@@ -31,10 +31,12 @@ logger = logging.getLogger(__name__)
 CAN_EFF_FLAG = 0x80000000       # SocketCAN "extended frame" flag
 CAN_EFF_MASK = 0x1FFFFFFF       # 29-bit ID mask
 
+
 def eff_id(arb29: int) -> int:
     if arb29 & ~CAN_EFF_MASK:
         raise ValueError(f"ID {arb29:#x} exceeds 29 bits")
     return CAN_EFF_FLAG | arb29
+
 
 async def _send_sig(client, arb29: int, payload: bytes, timeout: float = 5.0) -> None:
     msg = RawCanbusMessage()
@@ -43,6 +45,7 @@ async def _send_sig(client, arb29: int, payload: bytes, timeout: float = 5.0) ->
     msg.error = False
     msg.data = payload                   # 8 bytes
     await asyncio.wait_for(client.request_reply("/can_message", msg, decode=True), timeout=timeout)
+
 
 async def trigger_dipbob(service_config_path: str = "can0", timeout: float = 5.0) -> None:
     """Trigger the dipbob deployment.
@@ -101,6 +104,75 @@ async def check_filter_convergence(filter_client: EventClient, timeout: float = 
         return False
     except Exception as e:
         logger.error(f"Error checking filter convergence: {e}")
+        return False
+
+
+async def wait_for_dipbob_completion(
+    canbus_client: EventClient,
+    timeout: float = 7.0,
+    can_id: int = 0x18FF0007,
+    completion_byte: int = 0x20,
+    can_channel: str = "can0",
+    completion_flag_path: Path = Path("/tmp/dipbob_complete.flag")
+) -> bool:
+    """
+    Wait for dipbob completion signal on CAN bus.
+
+    The dipbob script (running on separate Raspberry Pi) sends a CAN message
+    when measurement is complete. We monitor the physical CAN bus using python-can.
+
+    Args:
+        canbus_client: EventClient for CAN bus service (unused, kept for API compatibility)
+        timeout: Maximum time to wait for completion signal (default 7.0s)
+        can_id: CAN arbitration ID to monitor (default 0x18FF0007)
+        completion_byte: Expected value in data[2] for completion (default 0x20)
+        can_channel: CAN interface to monitor (default "can0")
+        completion_flag_path: Unused, kept for API compatibility
+
+    Returns:
+        True if completion signal received, False if timeout
+    """
+    try:
+        import can
+    except ImportError:
+        logger.error("[DIPBOB] python-can not installed, cannot wait for completion signal")
+        logger.error("[DIPBOB] Install with: pip install python-can")
+        return False
+
+    logger.info(f"[DIPBOB] Monitoring {can_channel} for completion signal (timeout: {timeout}s)...")
+    logger.info(f"[DIPBOB] Looking for CAN ID 0x{can_id:X} with data[2]=0x{completion_byte:02X}")
+
+    start_time = asyncio.get_event_loop().time()
+
+    try:
+        # Open CAN bus using python-can (same as dipbob script uses to send)
+        with can.interface.Bus(channel=can_channel, interface='socketcan') as bus:
+            while True:
+                elapsed = asyncio.get_event_loop().time() - start_time
+
+                # Check timeout
+                if elapsed >= timeout:
+                    logger.warning(f"[DIPBOB] Timeout after {timeout}s - no completion signal received")
+                    return False
+
+                # Poll for CAN messages (non-blocking with short timeout)
+                msg = bus.recv(timeout=0.1)
+
+                if msg is None:
+                    # No message, yield to event loop and continue
+                    await asyncio.sleep(0.01)
+                    continue
+
+                # Check if this is the completion signal
+                # Dipbob sends with extended ID (29-bit)
+                if msg.arbitration_id == can_id and msg.is_extended_id and len(msg.data) > 2:
+                    if msg.data[2] == completion_byte:
+                        logger.info(f"[DIPBOB] ✓ Completion signal received after {elapsed:.1f}s")
+                        return True
+
+    except Exception as e:
+        logger.error(f"[DIPBOB] Error monitoring CAN bus: {e}")
+        logger.error(f"[DIPBOB] Make sure {can_channel} interface is up: sudo ip link set {can_channel} up")
         return False
 
 
@@ -185,4 +257,4 @@ async def imu_wiggle(
 
     # Failed to converge after max attempts
     # logger.error(f"✗ Filter did not converge after {max_attempts} wiggle attempts")
-    return False 
+    return False

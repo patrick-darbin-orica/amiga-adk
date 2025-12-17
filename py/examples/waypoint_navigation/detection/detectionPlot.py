@@ -900,7 +900,7 @@ detector = HostYOLODetector(MODEL_PATH, conf=CONF_THRESHOLD, iou=IOU_THRESHOLD)
 print(f"✓ Loaded YOLO model with {len(detector.class_names)} classes")
 
 # Create vision_running flag file to signal navigation system
-VISION_FLAG_FILE = Path(__file__).parent.parent / ".vision_running"
+VISION_FLAG_FILE = Path(__file__).resolve().parent.parent / ".vision_running"
 try:
     VISION_FLAG_FILE.touch()
     print(f"✓ Created vision flag: {VISION_FLAG_FILE}")

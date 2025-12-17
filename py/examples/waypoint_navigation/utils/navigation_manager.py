@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional, TYPE_CHECKING, Dict, List
 
 from farm_ng.core.event_client import EventClient
+from farm_ng.canbus.canbus_pb2 import Twist2d
 from farm_ng.track.track_pb2 import (
     RobotStatus,
     Track,
@@ -16,7 +17,7 @@ from farm_ng.track.track_pb2 import (
 )
 from google.protobuf.empty_pb2 import Empty
 from utils.actuator import BaseActuator, NullActuator
-from utils.canbus import trigger_dipbob, imu_wiggle
+from utils.canbus import trigger_dipbob, imu_wiggle, wait_for_dipbob_completion
 from utils.navigation_state import set_navigation_state
 from utils.oak2_camera_cache import enable_alignment, disable_alignment, is_alignment_enabled
 
@@ -457,6 +458,24 @@ class NavigationManager:
 
         return False
 
+    async def _send_brake_commands_during_chute(self) -> None:
+        """Send 0 m/s brake commands at 20Hz during chute operation to prevent rolling."""
+        logger.info("[BRAKE] Starting brake command sender for chute operation")
+        try:
+            while True:
+                twist = Twist2d()
+                twist.linear_velocity_x = 0.0
+                twist.linear_velocity_y = 0.0
+                twist.angular_velocity = 0.0
+
+                await self.canbus_client.request_reply("/twist", twist)
+                await asyncio.sleep(0.05)  # 20 Hz
+        except asyncio.CancelledError:
+            logger.info("[BRAKE] Brake command sender stopped")
+            raise
+        except Exception as e:
+            logger.warning(f"[BRAKE] Failed to send brake command: {e}")
+
     async def execute_single_track(self, track: Track, timeout: float = 30.0, *, do_post_actions: bool = True, max_filter_retries: int = 3, max_canbus_retries: int = 2) -> bool:
         """Execute a single track segment and wait for completion.
 
@@ -593,28 +612,44 @@ class NavigationManager:
                                 alignment_success = True
                                 break
 
-                        # Disable alignment
-                        disable_alignment()
-
                         if alignment_success:
                             logger.info("[HOLE ALIGN] ✓ Hole alignment completed")
                         else:
                             logger.warning("[HOLE ALIGN] ⚠ Hole alignment timed out, proceeding anyway...")
+
+                        # NOTE: Alignment stays enabled (keeps sending 0 m/s brake commands)
+                        # during dipbob and chute operations to prevent rolling on inclines
                     else:
                         logger.info("[HOLE ALIGN] Hole alignment disabled, skipping...")
 
                     # 3) Deploy plumbob (tool should now be perfectly aligned over hole)
+                    # Alignment service continues sending 0 m/s to hold position
                     logger.info("[DEPLOY DEBUG] Calling trigger_dipbob...")
                     try:
                         await trigger_dipbob("can0", timeout=5.0)
                         logger.info("[DEPLOY DEBUG] Dipbob triggered successfully")
-                        await asyncio.sleep(7.0)  # TODO: swap for measurement await
+
+                        # Wait for completion signal from dipbob script (or 7s timeout)
+                        logger.info("[DIPBOB] Waiting for measurement completion...")
+                        completed = await wait_for_dipbob_completion(
+                            self.canbus_client,
+                            timeout=7.0
+                        )
+                        if completed:
+                            logger.info("[DIPBOB] ✓ Measurement completed and logged")
+                        else:
+                            logger.warning("[DIPBOB] ⚠ Timeout waiting for completion, proceeding anyway...")
                     except asyncio.TimeoutError:
                         logger.warning("[DEPLOY DEBUG] Dipbob timeout - device may be unplugged, continuing anyway...")
                     except Exception as e:
                         logger.warning(f"[DEPLOY DEBUG] Dipbob error: {e}, continuing anyway...")
 
                     # 4) Move forward so robot origin is over the hole
+                    # Disable alignment before moving (auto_control needs to take over)
+                    if self.hole_alignment_enabled:
+                        disable_alignment()
+                        logger.info("[HOLE ALIGN] Disabled for tool→origin movement")
+
                     origin_track = await self.motion_planner.create_tool_to_origin_segment()
                     ok2 = await self.execute_single_track(origin_track, timeout=15.0, do_post_actions=False)
                     if not ok2:
@@ -622,16 +657,29 @@ class NavigationManager:
                         return success  # don't open chute if failed
 
                     # 5) Open/close chute
-                    await self.actuator.pulse_sequence(
-                        open_seconds=self.actuator_open_seconds,
-                        close_seconds=self.actuator_close_seconds,
-                        rate_hz=self.actuator_rate_hz,
-                        settle_before=3.0,
-                        settle_between=2.0,
-                        wait_for_enter_between=False,
-                        enter_prompt="Hole measured. Press ENTER to close the chute...",
-                        enter_timeout=30.0,      # safety timeout
-                    )
+                    # Send brake commands during chute operation to prevent rolling
+                    logger.info("[CHUTE] Holding position during chute operation...")
+                    chute_brake_task = asyncio.create_task(self._send_brake_commands_during_chute())
+
+                    try:
+                        await self.actuator.pulse_sequence(
+                            open_seconds=self.actuator_open_seconds,
+                            close_seconds=self.actuator_close_seconds,
+                            rate_hz=self.actuator_rate_hz,
+                            settle_before=3.0,
+                            settle_between=2.0,
+                            wait_for_enter_between=False,
+                            enter_prompt="Hole measured. Press ENTER to close the chute...",
+                            enter_timeout=30.0,      # safety timeout
+                        )
+                    finally:
+                        # Stop brake commands after chute operation
+                        chute_brake_task.cancel()
+                        try:
+                            await chute_brake_task
+                        except asyncio.CancelledError:
+                            pass
+                        logger.info("[CHUTE] Chute operation complete, brake commands stopped")
 
                     # Wait for CAN bus to settle after actuator deployment
                     await asyncio.sleep(1.0)
