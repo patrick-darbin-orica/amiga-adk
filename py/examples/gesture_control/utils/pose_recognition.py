@@ -1,6 +1,7 @@
 import numpy as np
 from typing import Dict, Tuple, List, Optional
 from dataclasses import dataclass
+from aioconsole import ainput
 
 
 @dataclass
@@ -131,15 +132,15 @@ class poseKeypoints:
         left_arm_straight = 130 <= left_elbow_angle <= 180
         right_arm_straight = 130 <= right_elbow_angle <= 180
 
-        # Determine if the arm is horizontal [0,45]°
-        left_arm_horizontal = left_arm_angle <= 45
-        right_arm_horizontal = right_arm_angle <= 45
+        # Determine if the arm is horizontal [0,20]°
+        left_arm_horizontal = left_arm_angle <= 20
+        right_arm_horizontal = right_arm_angle <= 20
 
         # If both arms are straight and horizontal, determine the confidences
         # and store the data in the data class, otherwise return None
         if left_arm_straight and right_arm_straight and left_arm_horizontal and right_arm_horizontal:
             angle_confidence = (left_elbow_angle + right_elbow_angle) / 360
-            horizontal_confidence = 1.0 - ((left_arm_angle + right_arm_angle) / 90)
+            horizontal_confidence = 1.0 - ((left_arm_angle + right_arm_angle) / 40)
             confidence = (angle_confidence + horizontal_confidence) / 2.0
             return poseDetection(
                 pose_name='T-Pose',
@@ -253,8 +254,8 @@ class poseKeypoints:
         # Determine if the left arm is straight [130,180]°
         left_arm_straight = 130 <= left_elbow_angle <= 180
 
-        # Determine if the left arm is horizontal [0,45]°
-        left_arm_horizontal = left_arm_angle <= 45
+        # Determine if the left arm is horizontal [0,20]°
+        left_arm_horizontal = left_arm_angle <= 20
 
         # Ensure the left arm is straight and horizontal, otherwise return None
         if not (left_arm_straight and left_arm_horizontal):
@@ -289,7 +290,7 @@ class poseKeypoints:
         # and store the data in the data class, otherwise return None
         if left_arm_straight and left_arm_horizontal:
             angle_confidence = left_elbow_angle / 180
-            horizontal_confidence = 1.0 - (left_arm_angle / 45)
+            horizontal_confidence = 1.0 - (left_arm_angle / 20)
             confidence = (angle_confidence + horizontal_confidence) / 2.0
             return poseDetection(
                 pose_name='Left Arm Wide',
@@ -333,8 +334,8 @@ class poseKeypoints:
         # Determine if the right arm is straight [130,180]°
         right_arm_straight = 130 <= right_elbow_angle <= 180
 
-        # Determine if the right arm is horizontal [0,45]°
-        right_arm_horizontal = right_arm_angle <= 45
+        # Determine if the right arm is horizontal [0,20]°
+        right_arm_horizontal = right_arm_angle <= 20
 
         # Determine the angle of the left arm created by the left elbow
         left_elbow_angle = self.calculateAngle(points[keypoints[0]],
@@ -365,7 +366,7 @@ class poseKeypoints:
         # and store the data in the data class, otherwise return None
         if right_arm_straight and right_arm_horizontal:
             angle_confidence = right_elbow_angle / 180
-            horizontal_confidence = 1.0 - (right_arm_angle / 45)
+            horizontal_confidence = 1.0 - (right_arm_angle / 20)
             confidence = (angle_confidence + horizontal_confidence) / 2.0
             return poseDetection(
                 pose_name='Right Arm Wide',
@@ -608,3 +609,30 @@ class poseKeypoints:
 
         except Exception:
             return None
+
+    async def gesture_user_input(self, gesture) -> str:
+        if gesture is None:
+            return "none"
+
+        print(f"Amiga detected the gesture: {gesture.pose_name}!")
+        if gesture.pose_name == 'Left Arm Wide':
+            print("The Amiga is assigned to move backwards")
+        # TODO: Update for specific gestures: t-pose, both arms up, etc.
+        while True:
+            try:
+                choice = await ainput("Do you wish to proceed with this gesture's assigned action? (y/n): ")
+                if choice in ["y"]:
+                    print("Assigned action will commence now.")
+                    if gesture.pose_name == "Left Arm Wide":
+                        print("ATTN: The Amiga is moving backwards. Keep the surrounding area clear!")
+                        return "commence"
+                    print("No action is assigned, but y has been processed.")
+                    return "understood"
+                elif choice in ["n"]:
+                    print("Assigned action will not commence. Continuing with the camera feed...")
+                    return "return"
+                else:
+                    print("Invalid entry. Please enter either y/n.")
+            except (EOFError, KeyboardInterrupt):
+                print("Input terminated - no action will commence.")
+                return "terminated"
