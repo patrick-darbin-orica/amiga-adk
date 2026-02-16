@@ -3,7 +3,7 @@
     "port": 50010,
     "host": "localhost",
     "log_level": "INFO",
-  
+
     "camera_driver": {
       "calibration": {
         "camera_data": [
@@ -46,4 +46,3 @@
       }
     }
   }
-  
