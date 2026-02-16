@@ -39,11 +39,12 @@ fi
 MAIN_CMD="python main.py \
  --config ./configs/config.json \
  --tool-config-path ./configs/tool_config.json \
- --waypoints-path ./surveyed-waypoints/deerPark.csv \
+ --waypoints-path ./surveyed-waypoints/kktcBack2Lanes.csv \
  --last-row-waypoint-index 3 \
  --turn-direction left \
- --row-spacing 6.0 \
+ --row-spacing 1.8 \
  --headland-buffer 1.8 \
+ --actuator-enabled \
  --actuator-id 0 --actuator-rate-hz 5.0" 
   
 

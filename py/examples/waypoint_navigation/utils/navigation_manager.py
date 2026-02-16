@@ -2,6 +2,7 @@
 from __future__ import annotations
 import asyncio
 import logging
+import math
 import numpy as np
 from pathlib import Path
 from typing import Optional, TYPE_CHECKING, Dict, List
@@ -312,11 +313,75 @@ class NavigationManager:
                     f"longitudinal: {error.longitudinal_distance:.2f}m)"
                 )
 
+    async def _check_turn_progress(self, track_segment: Track, segment_name: str) -> tuple[bool, float]:
+        """
+        Check if a turn segment made partial progress before timing out.
+
+        Returns:
+            (is_nearly_complete, heading_error_rad):
+                - is_nearly_complete: True if turn is within acceptable tolerance
+                - heading_error_rad: Remaining heading error in radians
+        """
+        from utils.pose_cache import get_latest_pose
+
+        # Only check for turn segments
+        if not ("turn" in segment_name.lower() or "pi" in segment_name.lower() or "row_end" in segment_name.lower()):
+            return False, 0.0
+
+        try:
+            # Get current robot pose
+            current_pose = get_latest_pose()
+            if current_pose is None:
+                logger.warning("[TURN RECOVERY] Cannot check turn progress - no pose available")
+                return False, 0.0
+
+            current_heading = current_pose.get('yaw_rad', 0.0)
+
+            # Get target heading from last waypoint in track
+            if not track_segment.waypoints:
+                return False, 0.0
+
+            last_waypoint = track_segment.waypoints[-1]
+            target_heading = float(last_waypoint.pose.rotation.log()[-1])
+
+            # Calculate heading error (normalize to [-pi, pi])
+            heading_error = target_heading - current_heading
+            while heading_error > math.pi:
+                heading_error -= 2 * math.pi
+            while heading_error < -math.pi:
+                heading_error += 2 * math.pi
+
+            abs_error = abs(heading_error)
+
+            logger.info(f"[TURN RECOVERY] Current heading: {math.degrees(current_heading):.1f}°, "
+                       f"Target: {math.degrees(target_heading):.1f}°, "
+                       f"Error: {math.degrees(abs_error):.1f}°")
+
+            # Consider nearly complete if within 20 degrees
+            ACCEPTABLE_ERROR_RAD = 0.35  # ~20 degrees
+            is_nearly_complete = abs_error < ACCEPTABLE_ERROR_RAD
+
+            return is_nearly_complete, abs_error
+
+        except Exception as e:
+            logger.warning(f"[TURN RECOVERY] Error checking turn progress: {e}")
+            return False, 0.0
+
     async def _cleanup(self):
         """Clean up resources and cancel tasks."""
         logger.info("Starting cleanup...")
- 
+
         self.shutdown_requested = True
+
+        # Cancel current track if one is executing
+        if self.track_executing:
+            logger.info("Cancelling active track...")
+            try:
+                await self._cancel_following()
+                # Send stop command to ensure robot stops moving
+                await self._send_brake_command()
+            except Exception as e:
+                logger.warning(f"Error cancelling track during cleanup: {e}")
 
         if self.monitor_task and not self.monitor_task.done():
             logger.info("Cancelling monitor task...")
@@ -476,7 +541,7 @@ class NavigationManager:
         except Exception as e:
             logger.warning(f"[BRAKE] Failed to send brake command: {e}")
 
-    async def execute_single_track(self, track: Track, timeout: float = 30.0, *, do_post_actions: bool = True, max_filter_retries: int = 3, max_canbus_retries: int = 2) -> bool:
+    async def execute_single_track(self, track: Track, timeout: float = 20.0, *, do_post_actions: bool = True, max_filter_retries: int = 3, max_canbus_retries: int = 2) -> bool:
         """Execute a single track segment and wait for completion.
 
         If FILTER_DIVERGED is detected, will attempt to wiggle the robot and retry.
@@ -846,7 +911,7 @@ class NavigationManager:
                     # Turn/maneuver segments - no deployment
                     # Calculate dynamic timeout based on number of waypoints (assume ~1.5s per waypoint)
                     num_waypoints = len(track_segment.waypoints)
-                    dynamic_timeout = max(30.0, num_waypoints * 1.5 + 10.0)  # At least 30s, or 1.5s/wp + 10s buffer
+                    dynamic_timeout = max(20.0, num_waypoints * 1.5 + 10.0)  # At least 20s, or 1.5s/wp + 10s buffer
                     logger.info(f"Using dynamic timeout of {dynamic_timeout:.1f}s for {num_waypoints} waypoints")
                     success = await self.execute_single_track(track_segment, timeout=dynamic_timeout, do_post_actions=False)
 
@@ -855,6 +920,28 @@ class NavigationManager:
                 while not success:
                     if self.shutdown_requested:
                         break
+
+                    # Check if this is a turn segment and whether we made partial progress
+                    is_turn_segment = "turn" in segment_name.lower() or "pi" in segment_name.lower() or "row_end" in segment_name.lower()
+                    if is_turn_segment:
+                        is_nearly_complete, heading_error = await self._check_turn_progress(track_segment, segment_name)
+
+                        if is_nearly_complete:
+                            logger.info(
+                                f"[TURN RECOVERY] Turn nearly complete "
+                                f"(error: {math.degrees(heading_error):.1f}°), accepting as success"
+                            )
+                            success = True
+                            break
+                        elif heading_error < 1.57:  # ~90 degrees - partial progress made
+                            logger.info(
+                                f"[TURN RECOVERY] Partial turn completed "
+                                f"({math.degrees(heading_error):.1f}° remaining). "
+                                f"Next retry will continue from current position."
+                            )
+                            # The redo_last_segment() will create a new track from current position,
+                            # so this effectively creates a continuation track
+
                     logger.warning(
                         f"Failed to execute segment {segment_count}. Stopping navigation.")
                     failed_attempts += 1
@@ -879,7 +966,7 @@ class NavigationManager:
                     # Calculate dynamic timeout for maneuver segments
                     if not is_waypoint_segment and not is_approach_segment:
                         num_waypoints = len(track_segment.waypoints)
-                        dynamic_timeout = max(30.0, num_waypoints * 1.5 + 10.0)
+                        dynamic_timeout = max(20.0, num_waypoints * 1.5 + 10.0)
                         success = await self.execute_single_track(track_segment, timeout=dynamic_timeout, do_post_actions=should_deploy)
                     else:
                         success = await self.execute_single_track(track_segment, do_post_actions=should_deploy)

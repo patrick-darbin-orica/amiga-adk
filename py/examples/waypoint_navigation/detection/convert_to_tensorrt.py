@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Convert YOLO .pt model to TensorRT engine for GPU acceleration on Jetson."""
 
-from ultralytics import YOLOE
+from ultralytics import YOLO
 from pathlib import Path
 import sys
 
 # Model to convert
-model_path = Path(__file__).parent / "best1.pt"
+model_path = Path(__file__).parent / "yolo26n-pose.pt"
 
 if not model_path.exists():
     print(f"❌ Model not found: {model_path}")
@@ -21,7 +21,7 @@ print(f"{'='*70}\n")
 
 # Load model
 print(f"Loading model...")
-model = YOLOE(str(model_path))
+model = YOLO(str(model_path))
 
 print(f"✓ Model loaded")
 print(f"  Classes: {list(model.names.values())}")

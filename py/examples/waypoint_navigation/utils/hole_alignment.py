@@ -68,6 +68,8 @@ class ContinuousAlignmentService:
         target_reticle_x: int = 958,
         target_reticle_y: int = 931,
         tolerance_px: int = 40,
+        dead_zone_px: int = 10,
+        min_consecutive_aligned: int = 10,
         move_gain: float = 0.001,
         derivative_gain: float = 0.002,
         max_velocity: float = 0.15,
@@ -86,7 +88,9 @@ class ContinuousAlignmentService:
             device_id: OAK device MxID (oak2 rear-facing camera)
             target_reticle_x: Target X pixel position for collar center
             target_reticle_y: Target Y pixel position for collar center
-            tolerance_px: Alignment tolerance in pixels
+            tolerance_px: Alignment tolerance in pixels (outer boundary)
+            dead_zone_px: Dead zone tolerance in pixels (inner boundary, no corrections applied)
+            min_consecutive_aligned: Minimum consecutive frames in dead zone before stopping corrections
             move_gain: Proportional gain (meters per pixel offset)
             derivative_gain: Derivative gain for damping oscillations
             max_velocity: Maximum linear velocity (m/s)
@@ -108,6 +112,8 @@ class ContinuousAlignmentService:
         self.target_reticle_x = target_reticle_x
         self.target_reticle_y = target_reticle_y
         self.tolerance_px = tolerance_px
+        self.dead_zone_px = dead_zone_px
+        self.min_consecutive_aligned = min_consecutive_aligned
         self.move_gain = move_gain
         self.derivative_gain = derivative_gain
         self.max_velocity = max_velocity
@@ -284,12 +290,13 @@ class ContinuousAlignmentService:
         # Calculate offset and alignment
         offset_y = None
         is_aligned = False
+        in_dead_zone = False
         velocity_cmd = 0.0
 
         if detections and alignment_active:
             # Use highest confidence detection
             best_det = max(detections, key=lambda d: d['confidence'])
-            x1, y1, x2, y2 = best_det['bbox']
+            _, y1, _, y2 = best_det['bbox']
 
             # Calculate collar center
             collar_center_y = (y1 + y2) / 2
@@ -297,7 +304,10 @@ class ContinuousAlignmentService:
             # Calculate vertical offset
             offset_y = collar_center_y - self.target_reticle_y
 
-            # Check alignment
+            # Check if in dead zone (tight tolerance for stable holding)
+            in_dead_zone = abs(offset_y) <= self.dead_zone_px
+
+            # Check if in broader alignment tolerance
             is_aligned = abs(offset_y) <= self.tolerance_px
 
             # Calculate derivative term
@@ -308,33 +318,53 @@ class ContinuousAlignmentService:
 
             self.last_offset_y = offset_y
 
-            # Calculate velocity command
-            proportional_term = offset_y * self.move_gain
-            derivative_term = offset_derivative * self.derivative_gain
-
-            velocity_cmd = np.clip(
-                proportional_term - derivative_term,
-                -self.max_velocity,
-                self.max_velocity
-            )
-
-            # Apply minimum velocity threshold
-            MIN_VELOCITY = 0.045
-            if abs(velocity_cmd) > 0.001:
-                if abs(velocity_cmd) < MIN_VELOCITY:
-                    velocity_cmd = MIN_VELOCITY if velocity_cmd > 0 else -MIN_VELOCITY
-
-            # Update state
-            if is_aligned:
+            # Dead zone logic: if within dead zone, hold at 0 and count consecutive frames
+            if in_dead_zone:
                 self.consecutive_aligned += 1
-                self.desired_velocity = 0.0
-                if self.consecutive_aligned % 5 == 1:  # Log every 5 frames
+
+                # Only stop corrections after sufficient consecutive frames in dead zone
+                if self.consecutive_aligned >= self.min_consecutive_aligned:
+                    self.desired_velocity = 0.0
+                    if self.consecutive_aligned % 10 == self.min_consecutive_aligned:  # Log occasionally
+                        logger.info(
+                            f"[ALIGN SERVICE] LOCKED ✓ "
+                            f"(offset: {offset_y:+.1f}px, locked for {self.consecutive_aligned} frames)"
+                        )
+                else:
+                    # Still building up consecutive frames, apply gentle correction
+                    proportional_term = offset_y * self.move_gain
+                    derivative_term = offset_derivative * self.derivative_gain
+                    velocity_cmd = np.clip(
+                        proportional_term - derivative_term,
+                        -self.max_velocity,
+                        self.max_velocity
+                    )
+                    self.desired_velocity = velocity_cmd
                     logger.info(
-                        f"[ALIGN SERVICE] ALIGNED ✓ "
-                        f"(offset: {offset_y:+.1f}px, consecutive: {self.consecutive_aligned})"
+                        f"[ALIGN SERVICE] STABILIZING "
+                        f"(offset: {offset_y:+.1f}px, frames: {self.consecutive_aligned}/"
+                        f"{self.min_consecutive_aligned})"
                     )
             else:
+                # Outside dead zone - reset counter and apply corrections
                 self.consecutive_aligned = 0
+
+                # Calculate velocity command with PD control
+                proportional_term = offset_y * self.move_gain
+                derivative_term = offset_derivative * self.derivative_gain
+
+                velocity_cmd = np.clip(
+                    proportional_term - derivative_term,
+                    -self.max_velocity,
+                    self.max_velocity
+                )
+
+                # Apply minimum velocity threshold to overcome static friction
+                MIN_VELOCITY = 0.045
+                if abs(velocity_cmd) > 0.001:
+                    if abs(velocity_cmd) < MIN_VELOCITY:
+                        velocity_cmd = MIN_VELOCITY if velocity_cmd > 0 else -MIN_VELOCITY
+
                 self.desired_velocity = velocity_cmd
                 direction = "FORWARD" if velocity_cmd > 0 else "REVERSE"
                 logger.info(
@@ -351,7 +381,10 @@ class ContinuousAlignmentService:
         vis_frame = self._create_visualization(frame, detections, offset_y, is_aligned, velocity_cmd, fps, alignment_active)
         set_oak2_frame(vis_frame)
 
-    def _create_visualization(self, image: np.ndarray, detections: list, offset_y: float, is_aligned: bool, velocity_cmd: float, fps: float, alignment_active: bool):
+    def _create_visualization(
+        self, image: np.ndarray, detections: list, offset_y: float,
+        is_aligned: bool, velocity_cmd: float, fps: float, alignment_active: bool
+    ):
         """Create visualization frame with detection overlay."""
         import cv2
 
@@ -384,16 +417,59 @@ class ContinuousAlignmentService:
         # Draw target reticle
         reticle_color = (0, 255, 0) if is_aligned else (0, 165, 255)
         reticle_size = 30
-        cv2.line(vis_image, (self.target_reticle_x - reticle_size, self.target_reticle_y),
-                (self.target_reticle_x + reticle_size, self.target_reticle_y), reticle_color, 2)
-        cv2.line(vis_image, (self.target_reticle_x, self.target_reticle_y - reticle_size),
-                (self.target_reticle_x, self.target_reticle_y + reticle_size), reticle_color, 2)
+        # cv2.line(vis_image, (self.target_reticle_x - reticle_size, self.target_reticle_y),
+        #         (self.target_reticle_x + reticle_size, self.target_reticle_y), reticle_color, 2)
+        # cv2.line(vis_image, (self.target_reticle_x, self.target_reticle_y - reticle_size),
+        #         (self.target_reticle_x, self.target_reticle_y + reticle_size), reticle_color, 2)
         cv2.circle(vis_image, (self.target_reticle_x, self.target_reticle_y), 5, reticle_color, -1)
 
-        # Draw tolerance zone
-        tolerance_color = (100, 255, 100) if is_aligned else (100, 100, 100)
-        cv2.rectangle(vis_image, (0, self.target_reticle_y - self.tolerance_px),
-                     (vis_image.shape[1], self.target_reticle_y + self.tolerance_px), tolerance_color, 1)
+        # Draw tolerance zone (outer boundary) - red horizontal lines only, 40px wide
+        tolerance_color = (0, 0, 255)  # Red
+        tolerance_line_width = 40
+        tolerance_x_start = self.target_reticle_x - tolerance_line_width // 2
+        tolerance_x_end = self.target_reticle_x + tolerance_line_width // 2
+
+        # Top tolerance line
+        cv2.line(
+            vis_image,
+            (tolerance_x_start, self.target_reticle_y - self.tolerance_px),
+            (tolerance_x_end, self.target_reticle_y - self.tolerance_px),
+            tolerance_color,
+            2
+        )
+        # Bottom tolerance line
+        cv2.line(
+            vis_image,
+            (tolerance_x_start, self.target_reticle_y + self.tolerance_px),
+            (tolerance_x_end, self.target_reticle_y + self.tolerance_px),
+            tolerance_color,
+            2
+        )
+
+        # Draw dead zone (inner boundary) - horizontal lines only, 35px wide
+        in_dead_zone = offset_y is not None and abs(offset_y) <= self.dead_zone_px
+        is_locked = in_dead_zone and self.consecutive_aligned >= self.min_consecutive_aligned
+        dead_zone_color = (0, 255, 0) if is_locked else (0, 255, 255)  # Green if locked, yellow if stabilizing
+        dead_zone_line_width = 30
+        dead_zone_x_start = self.target_reticle_x - dead_zone_line_width // 2
+        dead_zone_x_end = self.target_reticle_x + dead_zone_line_width // 2
+
+        # Top dead zone line
+        cv2.line(
+            vis_image,
+            (dead_zone_x_start, self.target_reticle_y - self.dead_zone_px),
+            (dead_zone_x_end, self.target_reticle_y - self.dead_zone_px),
+            dead_zone_color,
+            2
+        )
+        # Bottom dead zone line
+        cv2.line(
+            vis_image,
+            (dead_zone_x_start, self.target_reticle_y + self.dead_zone_px),
+            (dead_zone_x_end, self.target_reticle_y + self.dead_zone_px),
+            dead_zone_color,
+            2
+        )
 
         # Draw detections
         for det in detections:
@@ -426,13 +502,42 @@ class ContinuousAlignmentService:
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, offset_color, 2)
             status_y += line_height
 
-        if is_aligned:
-            cv2.putText(vis_image, "STATUS: ALIGNED ✓", (10, status_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-        elif offset_y is not None and alignment_active:
-            direction = "FORWARD" if velocity_cmd > 0 else "REVERSE"
-            cv2.putText(vis_image, f"STATUS: {direction}", (10, status_y),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 165, 255), 2)
+        # Status text with dead zone info
+        if offset_y is not None and alignment_active:
+            in_dead_zone = abs(offset_y) <= self.dead_zone_px
+            is_locked = in_dead_zone and self.consecutive_aligned >= self.min_consecutive_aligned
+
+            if is_locked:
+                cv2.putText(
+                    vis_image,
+                    f"STATUS: LOCKED ✓ ({self.consecutive_aligned} frames)",
+                    (10, status_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2
+                )
+            elif in_dead_zone:
+                cv2.putText(
+                    vis_image,
+                    f"STATUS: STABILIZING ({self.consecutive_aligned}/{self.min_consecutive_aligned})",
+                    (10, status_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (255, 255, 0),
+                    2
+                )
+            else:
+                direction = "FORWARD" if velocity_cmd > 0 else "REVERSE"
+                cv2.putText(
+                    vis_image,
+                    f"STATUS: {direction}",
+                    (10, status_y),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 165, 255),
+                    2
+                )
         status_y += line_height
 
         cv2.putText(vis_image, f"Velocity: {self.desired_velocity:+.3f} m/s", (10, status_y),
@@ -525,7 +630,19 @@ async def main():
         "--tolerance-px",
         type=int,
         default=15,
-        help="Alignment tolerance (pixels)"
+        help="Alignment tolerance (pixels, outer boundary)"
+    )
+    parser.add_argument(
+        "--dead-zone-px",
+        type=int,
+        default=10,
+        help="Dead zone tolerance (pixels, inner boundary for stable holding)"
+    )
+    parser.add_argument(
+        "--min-consecutive-aligned",
+        type=int,
+        default=10,
+        help="Minimum consecutive frames in dead zone before stopping corrections"
     )
     parser.add_argument(
         "--move-gain",
@@ -583,6 +700,8 @@ async def main():
         target_reticle_x=args.target_x,
         target_reticle_y=args.target_y,
         tolerance_px=args.tolerance_px,
+        dead_zone_px=args.dead_zone_px,
+        min_consecutive_aligned=args.min_consecutive_aligned,
         move_gain=args.move_gain,
         derivative_gain=args.derivative_gain,
         max_velocity=args.max_velocity,
