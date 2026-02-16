@@ -4,3 +4,5 @@
 *pycache*
 *pb2*
 *proto*
+*whl*
+*.log
