@@ -182,6 +182,8 @@ py/tests/camera_overlay/main.py
 py/tests/camera_model_yoloE/
 py/tests/canbusMessaging/
 
+# Ignore md files from examples
+py/examples/**/*.md
 # Ignore xdipper folder (separate project)
 xdipper/
 
@@ -190,3 +192,9 @@ CLAUDE.md
 
 # Cached vision models
 *.depthai_cached_models/
+
+# Vision running flag files
+.vision_running
+
+# Wheel packages
+*.whl
