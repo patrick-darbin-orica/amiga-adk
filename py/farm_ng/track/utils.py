@@ -11,19 +11,31 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 from __future__ import annotations
 
+import math
+
 from pathlib import Path
+from typing import Union, Tuple, List
 
 from farm_ng.core.events_file_reader import proto_from_json_file
 from farm_ng.core.events_file_writer import proto_to_json_file
+from farm_ng.core.pose_pb2 import Pose
+from farm_ng.core.lie_pb2 import Isometry3F64, Rotation3F64, QuaternionF64
+from farm_ng.core.linalg_pb2 import Vec3F64
 from farm_ng.filter.filter_pb2 import FilterTrack
-from farm_ng.track.track_pb2 import Track
+from farm_ng.track.track_pb2 import Track, WaypointGeojson
+from farm_ng.gps.gps_pb2 import GpsFrame
+
+from farm_ng.track.rotation import theta_to_quaternion_z
+
+
+# radius of the Earth in meters
+EARTH_RADIUS = 6378137.0
 
 # WARNING: These methods are a temporary convenience and will be removed
 # once the use of FilterTrack protos has been fully phased out.
-
-
 def filter_track_to_track(filter_track: FilterTrack) -> Track:
     """Converts a FilterTrack proto to a generic Track proto.
 
@@ -45,3 +57,140 @@ def update_filter_track(track_path: Path) -> None:
     filter_track: FilterTrack = proto_from_json_file(track_path, FilterTrack())
     track: Track = filter_track_to_track(filter_track)
     proto_to_json_file(track_path, track)
+
+
+
+def compute_relative_position(
+    anchor: GpsFrame, pos: Union[GpsFrame, WaypointGeojson]
+) -> tuple[float, float, float]:
+    """Computes the NWU relative position of a GPS frame given an anchor.
+    Args:
+        anchor: The GPS frame to use as the origin.
+        pos: The GPS frame to compute the relative position of.
+    Returns:
+        The NWU relative position of the GPS frame.
+    """
+
+    # Simple equirectangular approximation, valid for small distances
+    dlat = math.radians(pos.latitude - anchor.latitude)
+    dlon = math.radians(pos.longitude - anchor.longitude)
+    lat = math.radians((pos.latitude + anchor.latitude) / 2.0)
+    east = EARTH_RADIUS * dlon * math.cos(lat)
+    north = EARTH_RADIUS * dlat
+    up = pos.altitude - anchor.altitude
+    return (north, -east, up) # We want WEST instead of EAST
+
+
+def compute_global_position(
+    anchor: GpsFrame, relpos: Tuple[float, float, float]
+) -> GpsFrame:
+    """Computes the global position of a GPS frame given an anchor and a relative position.
+
+    Args:
+        anchor: The GPS frame to use as the origin.
+        relpos: The relative position in the anchor's NWU frame.
+
+    Returns:
+        The global position as a GPS frame.
+    """
+
+    delta_east = -relpos[1]
+    delta_north = relpos[0]
+    delta_up = relpos[2]
+
+    delta_lat = delta_north / EARTH_RADIUS  # radians
+    delta_lon = delta_east / (
+        EARTH_RADIUS * math.cos(math.radians(anchor.latitude))
+    )  # radians
+
+    lat = anchor.latitude + math.degrees(delta_lat)
+    lon = anchor.longitude + math.degrees(delta_lon)
+    alt = anchor.altitude + delta_up
+    return GpsFrame(latitude=lat, longitude=lon, altitude=alt)
+
+
+
+def convert_track_to_local(track: Track, anchor: GpsFrame) -> List[Pose]:
+    """Converts a track with GPS waypoints to local NWU coordinates based on an anchor.
+
+    Args:
+        track: The track with GPS waypoints.
+        anchor: The GPS frame to use as the origin.
+
+    Returns:
+        A list of Poses representing the waypoints in local NWU coordinates.
+    """
+    poses: List[Pose] = []
+
+    for i, wp in enumerate(track.waypoints):
+        # Compute relative NWU position
+        north, west, up = compute_relative_position(anchor, wp)  # NWU
+        translation = Vec3F64(x=north, y=west, z=0.0)  # ignore up for now
+
+        # Encode heading if present
+        if wp.HasField("heading"):
+            # Convert heading (degrees counter clockwise from true north) to yaw in radians
+            yaw = math.radians(wp.heading)
+            # Construct quaternion representing yaw rotation about z-axis
+            q = theta_to_quaternion_z(yaw)
+            q = QuaternionF64(real=q[0], imag=Vec3F64(x=q[1], y=q[2], z=q[3]))
+            rotation = Rotation3F64(unit_quaternion=q)
+        else:
+            if len(track.waypoints) == 1:
+                # No heading and only one waypoint, use identity rotation
+                rotation = Rotation3F64(
+                    unit_quaternion=QuaternionF64(real=1.0, imag=Vec3F64(x=0, y=0, z=0))
+                )
+            elif i < len(track.waypoints) - 1:
+                next_wp = track.waypoints[i + 1]
+                # Compute relative position
+                relpos = compute_relative_position(wp, next_wp)
+                # Compute heading from relative position
+                yaw = math.atan2(relpos[1], relpos[0])
+                # Convert yaw to quaternion
+                q = theta_to_quaternion_z(yaw)
+                q = QuaternionF64(real=q[0], imag=Vec3F64(x=q[1], y=q[2], z=q[3]))
+                rotation = Rotation3F64(unit_quaternion=q)
+            else:
+                # last waypoint heading same as previous
+                rotation = poses[-1].a_from_b.rotation
+
+        iso = Isometry3F64(rotation=rotation, translation=translation)
+        pose = Pose(a_from_b=iso, frame_a="world", frame_b="robot")
+        poses.append(pose)
+
+    return poses
+
+def convert_track_to_global(track: Track, anchor: GpsFrame) -> Track:
+    """Converts a track with local poses (waypoints) and an anchor to global GPS coordinates (geojson_waypoints).
+        Assumes tracks contain only local waypoints or global geojson_waypoints - mix is not supported.
+
+    Args:
+        track: The track with relposned poses (waypoints)
+        anchor: The GPS frame to use as the origin.
+
+    Returns:
+       a Track with GPS waypoints (geojson_waypoints).
+    """
+    
+    # if track already uses geojson_waypoints, return as is
+    if len(track.geojson_waypoints) > 0:
+        return track
+
+    elif len(track.waypoints)>0 and len(track.geojson_waypoints) > 0:
+        raise ValueError("Track contains both waypoints and geojson_waypoints, cannot convert.")
+
+    else:
+        geojson_track = Track()
+
+        for wp in track.waypoints:
+            geojson_waypoint = compute_global_position(anchor, Tuple[
+                wp.a_from_b.translation.x,
+                wp.a_from_b.translation.y,
+                wp.a_from_b.translation.z
+                ]
+            )
+
+            geojson_track.append(geojson_waypoint)
+
+        return geojson_track
